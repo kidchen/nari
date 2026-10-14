@@ -2,12 +2,14 @@
 
 One Python container: a Telegram bot (long polling, no inbound ports) plus APScheduler cron jobs.
 
+Who gets what is set per person: `profiles.<id>.features` in settings is what they're **allowed** (`all` or a list of `market`, `realestate`, `cards`, `placeholder`). Within that, each person can `/pause <feature>` and `/resume <feature>` from the bot, which only stops scheduled messages. `/features` shows your current state.
+
 | Module | What | Schedule (America/Los_Angeles) | Recipients |
 |---|---|---|---|
-| A | Monthly parking **placeholder** image (watermarked, not a receipt) | 1st of month 08:00 | primary user |
-| B | Mortgage rates (FRED/Freddie Mac) + new listings / price changes / nearby sales from Redfin alert emails (Gmail) | Mon + Thu 18:00 | both |
-| C | Market close digest: watchlist, gainers/losers, volume spikes, headlines, Gemini catalysts | Mon–Fri 13:30 (skips holidays) | both |
-| D | Quarterly card plan (rotating categories, activation reminder); offer expiry reminders | Jan/Apr/Jul/Oct 1 09:00; daily 09:05 | per user |
+| A | Monthly parking **placeholder** image (watermarked, not a receipt) | 1st of month 08:00 | `placeholder` |
+| B | Redfin alerts from Gmail. New listings, price changes and back-on-market homes each arrive as a **photo** with a link to the real listing; sold homes and Redfin's suggestions come as one text message. Mortgage rates from FRED arrive weekly | Gmail check every 2 hours, 7am–9pm (silent if nothing new); mortgage Thu 18:00 | `realestate` |
+| C | Morning brief per person: portfolio + watchlist, with *what happened / why it matters / what to watch* for each stock with concrete news, the day's biggest market stories, and upcoming earnings | Mon–Fri 08:30 (skips holidays) | `market`, each with their own lists |
+| D | Quarterly card plan (rotating categories, activation reminder); offer expiry reminders | Jan/Apr/Jul/Oct 1 09:00; daily 09:05 | `cards` |
 
 ## Configuration: public defaults + private overrides
 
@@ -26,7 +28,7 @@ To start, create the local files from the examples:
 # config/settings.local.yaml
 profiles: {_replace: true, alex: {name: Alex, primary: true}, sam: {name: Sam}}
 real_estate: {max_price: 1500000, zips: {_replace: true, "94110": San Francisco}, recipients: [alex, sam]}
-market: {watchlist: [SPY, QQQ, AAPL], recipients: [alex, sam]}
+market: {seed_lists: {alex: {portfolio: [IBM], watch: [KO]}}, recipients: [alex, sam]}
 placeholder: {recipients: [alex]}
 ```
 
@@ -74,6 +76,9 @@ ssh opc@<vm-ip> 'docker run --rm -v nari-data:/d alpine cat /d/nari.db' > nari-b
 ## Bot commands
 
 ```
+/brief                      your market brief now (~1–3 min; Gemini retries when busy)
+/portfolio                  show; /portfolio add IBM KO; /portfolio del KO
+/watch                      show; /watch add XOM; /watch del XOM
 /cards                      your cards + this quarter's categories
 /best groceries             rank your cards for a category (+ matching offers)
 /offers                     list active offers
@@ -93,7 +98,13 @@ Copy the example block from `config/cards.yaml` into `config/cards.local.yaml`, 
 - **Single-family check**: the saved search does the main filtering. Addresses that contain Apt, Unit or # are also dropped.
 - **Mortgage rates** come from the weekly Freddie Mac survey, published on Thursdays. Monday's report repeats the previous Thursday's number.
 - **yfinance** is unofficial and can break when Yahoo makes changes. Pin and upgrade it deliberately.
-- **Gemini free tier**: models are often overloaded (503) or out of quota (429). `llm.models` in settings is a list tried in order. If every model fails, the digest falls back to plain headlines. Google Search grounding isn't available on the free tier. Free-tier prompts may be used by Google for training, but only public headlines and Redfin email text are sent.
+- **Brief quality depends on headlines.** News comes from Google News search (company name + "stock", last 30h) plus Yahoo per-ticker feeds, with clickbait filtered out. Gemini may only use those headlines and must cite them. Stocks whose only story is "moved with the market" are listed as Quiet, and the sector move appears once under Market stories. Your portfolio and watchlist live in the bot's database. `market.seed_lists` in `settings.local.yaml` only provides each person's starting lists.
+- **Gemini free tier**: models are often overloaded (503) or out of quota (429). Each task has a preferred model list (`llm.brief_models`, `llm.extraction_models`). A **circuit breaker** stored in the DB remembers failures:
+  - A model that fails is cooled down for 15 min, doubling with each further failure up to 6h. A 429 cools down for 2 min, and a 404 for 7 days.
+  - While cooling down, the model is skipped, so calls go straight to a working one. If every model is cooling, each gets one probe as a last resort.
+  - After the cooldown, the model gets one probe and is restored on success.
+  - `/status` shows the current state.
+  - `/brief` reuses a brief built in the last 30 min (`/brief fresh` forces a new one). Stocks with no fresh headlines aren't sent to Gemini. If every model fails, the digest falls back to plain headlines. Google Search grounding isn't available on the free tier. Free-tier prompts may be used by Google for training, but only public headlines and Redfin email text are sent.
 - **Discover categories** can't be fetched automatically: the live page sits behind bot protection, and the public JSON file is out of date. Set them each quarter with `/setcats`; the quarterly message reminds you.
 
 ## Tests

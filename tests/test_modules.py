@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from app.db import DB
-from app.modules import cards, market, mortgage, placeholder, realestate, redfin_email
+from app.modules import brief, cards, mortgage, placeholder, realestate, redfin_email
 from app.notify import split_message
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -35,7 +35,9 @@ def test_parse_real_sold_email_fixture():
 
 def test_classify_subjects():
     assert redfin_email.classify("2 homes like X just sold.") == "sold"
-    assert redfin_email.classify("Price drop: 1 Elm St") == "price_drop"
+    assert redfin_email.classify("Price drop: 1 Elm St") == "price_change"
+    assert redfin_email.classify("Price increase to $1.68M on 1 Elm St") == "price_change"
+    assert redfin_email.classify("Back on market: 1 Elm St") == "back_on_market"
     assert redfin_email.classify("3 new homes match your search") == "for_sale"
 
 
@@ -76,7 +78,8 @@ def test_diff_new_price_change_and_sold():
                                        _card(1, 1_450_000, "1 Elm St", "Oakland, CA 94607", was=1_500_000))
     d = realestate.diff_and_store(db, cheaper)
     assert d.price_changes[0][1] == 1_500_000
-    assert "🔻 was $1,500,000" in realestate.format_report(d, 2_000_000, 1, [])
+    ((_, cap),) = realestate.alert_items(d)
+    assert "💲 Price drop" in cap and "🔻 −$50,000 (was $1,500,000)" in cap
     sold = redfin_email.parse_email("1 home just sold", _card(1, 1_480_000, "1 Elm St", "Oakland, CA 94607"))
     assert len(realestate.diff_and_store(db, sold).sold) == 1
     assert realestate.diff_and_store(db, sold).sold == []  # reported once
@@ -161,29 +164,10 @@ def test_split_message():
     assert all(len(c) <= 1000 for c in chunks) and "\n".join(chunks) == text
 
 
-def test_market_format_and_prompt():
-    q = market.Quote("NVDA", "NVIDIA Corp", 120.5, 5.2, 9_000_000, 2_000_000)
-    assert q.volume_ratio == 4.5
-    out = market.format_digest(date(2026, 10, 13), [q], [q], [], [q], "NVDA: <earnings>", [])
-    assert "vol 4.5× avg" in out and "&lt;earnings&gt;" in out and "not financial advice" in out
-    prompt = market.build_catalyst_prompt([q], {"NVDA": ["NVIDIA beats"]}, ["Stocks rally"])
-    assert "NVIDIA beats" in prompt and "Never give buy/sell" in prompt
-
-
 def test_placeholder_renders_png():
     png = placeholder.render(date(2026, 9, 1), "Monthly parking", "$100.00")
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 10_000
     assert placeholder.period_for(date(2026, 2, 1)) == (date(2026, 2, 1), date(2026, 2, 28))
-
-
-def test_fresh_titles_drops_stale_and_undated():
-    import time as _t
-    from types import SimpleNamespace as NS
-    now = 1_800_000_000
-    entries = [NS(title="new", published_parsed=_t.gmtime(now - 3600)),
-               NS(title="old", published_parsed=_t.gmtime(now - 40 * 3600)),
-               NS(title="undated", published_parsed=None)]
-    assert market.fresh_titles(entries, 30, now=now) == ["new"]
 
 
 def test_account_emails_never_reach_llm():
@@ -203,3 +187,252 @@ def test_deep_merge_layers():
     base = {"a": {"x": 1, "y": 2}, "zips": {"94103": "SF"}, "lst": [1, 2], "gone": 1}
     local = {"a": {"y": 3}, "zips": {"_replace": True, "94110": "San Francisco"}, "lst": [9], "gone": None}
     assert deep_merge(base, local) == {"a": {"x": 1, "y": 3}, "zips": {"94110": "San Francisco"}, "lst": [9]}
+
+
+# ---- morning brief ----------------------------------------------------------------
+
+def _facts():
+    from datetime import date as d
+    f1 = brief.TickerFacts("ACME", "Acme Rocket Works", "EQUITY", 152.16, -2.8, 4.1, 2.4, -1.0,
+                           d(2026, 11, 3))
+    f1.headlines = [brief.Headline("ACME-1", "Acme stock is down on CoreWeave troubles", "Barron's", "https://b/1", 1.7)]
+    f2 = brief.TickerFacts("IDXF", "Index Fund ETF", "ETF", 707.4, -1.0)
+    f3 = brief.TickerFacts("FRUT", "Fruit Computer Inc.", "EQUITY", 343.0, 0.5, earnings=d(2026, 12, 30))
+    return {"ACME": f1, "IDXF": f2, "FRUT": f3}
+
+
+def test_clean_headlines_filters_fluff_and_dupes():
+    rows = [("What $10,000 Invested in Acme Today Could Be Worth", "Motley Fool", "l1", 1.0),
+            ("Acme Stock Is Down. It's CoreWeave's Death Spiral.", "Barron's", "l2", 1.7),
+            ("Acme stock is down. It\u2019s CoreWeave\u2019s death spiral", "Yahoo", "l3", 2.0),
+            ("Acme (NASDAQ:ACME) Stock Falls 2.8% - Should You Sell?", "MarketBeat", "l4", 0.2),
+            ("Acme wins $2B NASA contract", "Reuters", "l5", 3.0)]
+    out = brief.clean_headlines(rows, "ACME-", 10)
+    assert [h.title for h in out] == ["Acme Stock Is Down. It's CoreWeave's Death Spiral.", "Acme wins $2B NASA contract"]
+    assert [h.id for h in out] == ["ACME-1", "ACME-2"]
+
+
+def test_short_name_and_session_fraction():
+    from datetime import datetime as dt
+    assert brief.short_name("Fruit Computer Inc.") == "Fruit Computer"
+    assert brief.short_name("Widget Technologies Inc.") == "Widget"
+    assert brief.short_name("Acme Holdings, Inc.") == "Acme"
+    assert brief.session_fraction(dt(2026, 10, 14, 11, 30, tzinfo=brief.NY)) == pytest.approx(120 / 390)
+    assert brief.session_fraction(dt(2026, 10, 14, 8, 0, tzinfo=brief.NY)) == 0.05
+
+
+def test_prompt_has_rules_facts_and_ids():
+    f = _facts()
+    p = brief.build_prompt([f["ACME"], f["IDXF"]], [f["FRUT"]],
+                           [brief.Headline("M1", "OpenAI files for IPO", "Reuters", "l", 2.0)], date(2026, 10, 14))
+    assert "No buy/sell/hold" in p and "[ACME-1] Acme stock is down" in p and "[M1] OpenAI files for IPO" in p
+    assert "next earnings Nov 03 (in 20 days)" in p and "volume pace 2.4x normal" in p and "fund" in p
+
+
+def test_format_brief_with_llm():
+    from datetime import datetime as dt
+    f = _facts()
+    llm_out = brief.parse_llm('''```json
+{"portfolio": [{"symbol": "ACME", "type": "deal", "what": "Shares fall with CoreWeave <AI debt> worries", "why": "Investors link the two",
+  "watch": "Nov 3", "reaction": "negative", "sources": ["ACME-1"]},
+  {"symbol": "IDXF", "type": "none", "what": "Fell with the market", "why": "", "watch": "", "reaction": "negative", "sources": []}],
+ "watchlist": [], "market_stories": [{"what": "OpenAI files for IPO", "why": "Could be the largest ever", "sources": ["M1"]}],
+ "quiet": ["IDXF", "FRUT"]}
+```''')
+    market = [brief.Headline("M1", "OpenAI files for IPO", "Reuters", "https://r/1", 2.0)]
+    out = brief.format_brief(dt(2026, 10, 14, 8, 30, tzinfo=brief.ZoneInfo("America/Los_Angeles")),
+                             [("S&P 500", -1.0)], ["ACME", "IDXF"], ["FRUT"], f, market, llm_out)
+    assert "🔴 <b>ACME</b> 152.16 (-2.8%) · vol 2.4× pace — Shares fall" in out  # Nov 3 is 20d out: no earnings tag
+    assert "<i>Watch:</i> Earnings Nov 3" in out          # bare date fixed up
+    assert "Fell with the market" not in out              # type none dropped -> IDXF goes to quiet
+    assert "&lt;AI debt&gt;" in out and '<a href="https://b/1">Barron&#x27;s</a>' in out
+    assert "<i>Quiet:</i> IDXF -1.0%" in out and "<i>Quiet:</i> FRUT +0.5%" in out
+    assert "OpenAI files for IPO" in out and '<a href="https://r/1">Reuters</a>' in out
+    assert "Earnings next 2 weeks" not in out or "ACME" not in out.split("Earnings next 2 weeks")[1]  # Nov 3 is 20d out
+    assert "not financial advice" in out
+
+
+def test_format_brief_fallback_without_llm():
+    from datetime import datetime as dt
+    out = brief.format_brief(dt(2026, 10, 14, 8, 30, tzinfo=brief.ZoneInfo("America/Los_Angeles")),
+                             [], ["ACME"], [], _facts(), [], None)
+    assert "Acme stock is down" in out and "AI summary unavailable" in out
+    assert brief.parse_llm("not json") is None
+
+
+def test_ticker_lists_db():
+    db = DB(":memory:")
+    assert db.add_tickers("p", "portfolio", ["SHOP", "CHIP"]) == ["SHOP", "CHIP"]
+    assert db.add_tickers("p", "portfolio", ["CHIP", "IDXF"]) == ["IDXF"]
+    assert db.remove_tickers("p", "portfolio", ["CHIP", "XYZ"]) == ["CHIP"]
+    assert db.tickers("p", "portfolio") == ["SHOP", "IDXF"] and db.tickers("p", "watch") == []
+    assert db.has_any_tickers("p") and not db.has_any_tickers("q")
+
+
+
+def test_keep_item_and_fix_watch():
+    assert brief.keep_item({"type": "analyst", "what": "Downgraded by MS on ad slowdown"})
+    assert not brief.keep_item({"type": "none", "what": "Fell with tech"})
+    assert not brief.keep_item({"type": "earnings", "what": "  "})
+    f = brief.TickerFacts("X", earnings=date(2026, 10, 29))
+    assert brief.fix_watch("Oct 29", f) == "Earnings Oct 29" and brief.fix_watch("Oct 29", brief.TickerFacts("Y")) == ""
+    assert brief.fix_watch("FDA decision in November", f) == "FDA decision in November"
+
+
+# ---- feature access ------------------------------------------------------------------
+
+def test_access_allowed_paused_recipients():
+    from app.access import Access
+    db = DB(":memory:")
+    a = Access({"me": {"features": "all"}, "partner": {"features": ["realestate"]}, "x": {}}, db)
+    assert a.allowed("partner") == ["realestate"] and "market" in a.allowed("me") and "cards" in a.allowed("x")
+    assert a.recipients("realestate") == ["me", "partner", "x"] and a.recipients("market") == ["me", "x"]
+    a.set_paused("me", "market", True)
+    assert a.recipients("market") == ["x"] and not a.receives("me", "market") and a.receives("me", "cards")
+    a.set_paused("me", "market", False)
+    assert a.receives("me", "market")
+    assert "⏸️" not in a.describe("me") and "market" not in a.describe("partner")
+
+
+# ---- LLM circuit breaker ---------------------------------------------------------------
+
+class _FakeClock:
+    def __init__(self):
+        self.t = 1_000_000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _fake_client(behaviour, calls):
+    """behaviour: model -> 'ok' | int error code."""
+    from types import SimpleNamespace
+    from google.genai import errors
+
+    def generate_content(model, contents, config=None):
+        calls.append(model)
+        b = behaviour[model]
+        if b == "ok":
+            return SimpleNamespace(text=f"answer from {model}")
+        raise errors.APIError(b, {"error": {"code": b, "message": "high demand", "status": "UNAVAILABLE"}})
+    return lambda: SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+
+
+def test_breaker_skips_failing_model_then_reprobes():
+    from app.modules import llm
+    clock, db = _FakeClock(), DB(":memory:")
+    health = llm.ModelHealth(db.get_kv, db.set_kv, clock=clock)
+    behaviour, calls = {"strong": 503, "lite": "ok"}, []
+    run = lambda: llm.summarize("k", ["strong", "lite"], "p", attempts_per_model=3, health=health,  # noqa: E731
+                                _client_factory=_fake_client(behaviour, calls), _sleep=lambda s: None)
+    assert run() == "answer from lite" and calls == ["strong", "strong", "strong", "lite"]
+    assert health.cooling("strong") and health.order(["strong", "lite"]) == ["lite", "strong"]
+
+    calls.clear()                         # next call: straight to the working model, no wasted retries
+    assert run() == "answer from lite" and calls == ["lite"]
+
+    # persisted: a fresh ModelHealth (e.g. after a restart) still knows
+    assert llm.ModelHealth(db.get_kv, db.set_kv, clock=clock).cooling("strong")
+
+    clock.t += llm.COOLDOWN_503_BASE + 1  # cooldown over: strong gets probed again and wins when recovered
+    behaviour["strong"], calls[:] = "ok", []
+    assert run() == "answer from strong" and calls == ["strong"] and not health.cooling("strong")
+
+
+def test_breaker_backoff_grows_and_404_429():
+    from app.modules import llm
+    clock = _FakeClock()
+    h = llm.ModelHealth(clock=clock)
+    h.record_fail("m", 503)
+    first = h.state["m"]["until"] - clock.t
+    h.record_fail("m", 503)
+    assert h.state["m"]["until"] - clock.t == 2 * first
+    for _ in range(10):
+        h.record_fail("m", 503)
+    assert h.state["m"]["until"] - clock.t == llm.COOLDOWN_MAX
+    h.record_fail("gone", 404)
+    h.record_fail("busy", 429)
+    assert h.state["gone"]["until"] - clock.t == llm.COOLDOWN_404 and h.state["busy"]["until"] - clock.t == llm.COOLDOWN_429
+
+
+def test_all_models_cooling_still_tries_each_once():
+    from app.modules import llm
+    clock = _FakeClock()
+    h = llm.ModelHealth(clock=clock)
+    h.record_fail("a", 503)
+    h.record_fail("b", 503)
+    calls = []
+    out = llm.summarize("k", ["a", "b"], "p", attempts_per_model=3, health=h,
+                        _client_factory=_fake_client({"a": 503, "b": "ok"}, calls), _sleep=lambda s: None)
+    assert out == "answer from b" and calls == ["a", "b"]  # last resort, one probe each, no retry storm
+
+
+def test_parse_saved_search_alert_template():
+    html_ = (FIXTURES / "redfin_saved_search.html").read_text()
+    assert redfin_email.parse_search_meta(html_) == "example search · <$1.2M, House"
+    alert, similar = redfin_email.parse_email("Price increase to $1.15M on 10 Sample St", html_)
+    assert (alert.key, alert.event, alert.kind, alert.section) == ("redfin:900000001", "Price Increase", "price_change", "alert")
+    assert (alert.address, alert.city, alert.zip, alert.price, alert.was_price) == ("10 Sample St", "Oakland", "94607", 1150000, 999000)
+    assert (alert.beds, alert.baths, alert.sqft) == (2, 1.0, None)          # "—" sqft; lot size ignored
+    assert alert.url == "https://redmail3.redfin.com/a/click?_e=addr1"
+    assert (similar.section, similar.sqft, similar.baths, similar.key) == ("similar", 1800, 2.5, "redfin:900000002")
+
+
+def test_report_header_sections_and_similar_tracking():
+    db = DB(":memory:")
+    html_ = (FIXTURES / "redfin_saved_search.html").read_text()
+    cards = redfin_email.parse_email("Price increase", html_)
+    kept = realestate.filter_listings(cards, ZIPS)                          # no price cap by default
+    d = realestate.diff_and_store(db, kept)
+    assert [l.address for l, _ in d.price_changes] == ["10 Sample St"] and [l.address for l in d.similar] == ["20 Example Ave"]
+    ((alert, cap),) = realestate.alert_items(d, "example search · <$1.2M, House")
+    assert cap.splitlines()[0] == "<b>💲 Price increase</b>" and "🔺 +$151,000 (was $999,000)" in cap
+    assert "<i>example search · &lt;$1.2M, House</i>" in cap and "2 bd · 1 ba" in cap and len(cap) < 1024
+    assert alert.photo.startswith("https://www.redfin.com/stingray/do/api-get-listing-hero-shot/")
+    text = realestate.summary_text(d, ["example search · <$1.2M, House"])
+    assert "“example search · &lt;$1.2M, House”" in text and "≤" not in text
+    assert "Similar homes Redfin suggests (1)" in text and "may be outside your search" in text and "10 Sample St" not in text
+    d2 = realestate.diff_and_store(db, kept)                                # same email again: nothing new
+    assert not d2.similar and not d2.price_changes
+    # a home first seen as a suggestion that later shows up as a real alert counts as new
+    as_alert = [realestate.Listing(**{**similar.__dict__, "section": "alert", "kind": "for_sale"})
+                for similar in kept if similar.section == "similar"]
+    assert [l.address for l in realestate.diff_and_store(db, as_alert).new] == ["20 Example Ave"]
+    assert realestate.filter_listings(cards, ZIPS, max_price=1_200_000)[0].address == "10 Sample St"
+
+
+def test_resolve_links():
+    assert redfin_email.resolve_link("https://example.com/x") == "https://example.com/x"   # only redmail hosts
+    ls = redfin_email.parse_email("New homes", (FIXTURES / "redfin_saved_search.html").read_text())
+    out = redfin_email.with_resolved_links(ls, resolve=lambda u: u.replace("redmail3.redfin.com/a/click?_e=", "www.redfin.com/home/"))
+    assert out[0].url == "https://www.redfin.com/home/addr1"
+
+
+def test_llm_fallback_recovers_link_from_anchor():
+    html_ = '<a href="https://redmail3.redfin.com/a/click?_e=zz">7 Elm St, Berkeley, CA 94704</a> $1,500,000'
+    reply = '[{"address": "7 Elm St", "city": "Berkeley", "zip": "94704", "price": 1500000}]'
+    (l,) = redfin_email.parse_with_llm(html_, "for_sale", lambda p: reply)
+    assert l.url == "https://redmail3.redfin.com/a/click?_e=zz"
+
+
+def test_summary_none_when_only_alerts_and_fetch_photo_guards():
+    assert realestate.summary_text(realestate.Diff(), []) is None
+    assert redfin_email.fetch_photo("") is None and redfin_email.fetch_photo("https://evil.example/x.jpg") is None
+
+
+def test_error_alerts_throttled():
+    import asyncio
+    from app.jobs import Jobs
+    from types import SimpleNamespace
+    sent = []
+
+    class N:
+        async def send_text(self, profiles, text):
+            sent.append(text)
+    cfg = SimpleNamespace(profiles={"me": {"primary": True}}, primary_profile="me")
+    j = Jobs.__new__(Jobs)
+    j.cfg, j.db, j.n = cfg, DB(":memory:"), N()
+    for _ in range(3):
+        asyncio.run(j._report_error("realestate", RuntimeError("imap down")))
+    asyncio.run(j._report_error("market", RuntimeError("yahoo down")))
+    assert len(sent) == 2 and "realestate" in sent[0] and "market" in sent[1]

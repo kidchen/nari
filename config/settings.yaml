@@ -7,12 +7,16 @@
 timezone: America/Los_Angeles
 
 # People who can register with the bot: /start <INVITE_CODE>, then tap your name.
+# features: what each person may get — "all" or a list of: market, realestate, cards, placeholder.
+# Within that, people pause/resume their own features in the bot (/features, /pause, /resume).
 profiles:
   me:
     name: Me
-    primary: true        # receives admin-only messages (placeholder image, job errors) and can /run jobs
+    primary: true        # gets job-error alerts, /status and /run
+    features: all
   partner:
     name: Partner
+    features: [realestate]
 
 # Module A — monthly parking placeholder (clearly watermarked, no vendor branding)
 placeholder:
@@ -20,7 +24,6 @@ placeholder:
   label: Monthly parking
   amount: "$0.00"
   schedule: {day: 1, hour: 8, minute: 0}
-  recipients: [me]
 
 # Shared Gemini (Google AI Studio) settings. GEMINI_API_KEY in .env.
 llm:
@@ -31,12 +34,19 @@ llm:
   # for the digest, so RPM isn't a constraint there; 429s fall through to the next model anyway.
   models: [gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite]          # market catalysts
   extraction_models: [gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash]  # Redfin email fallback (bursty)
+  # Morning brief: quality matters and it runs ~once per person per day, so retry the stronger models
+  # through 503 "high demand" spikes before falling back to lite.
+  brief_models: [gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite]
+  brief_attempts_per_model: 3
+  brief_backoff_seconds: 20
   timeout_seconds: 45
 
 # Module B — real estate + mortgage rates
 real_estate:
   enabled: true
-  max_price: 1000000
+  # The Redfin saved search does the real filtering (its name + filters head the report).
+  # Optional extra cap, e.g. to drop Redfin's "similar homes" suggestions above budget:
+  max_price: null
   # Source: Redfin saved-search alert emails in Gmail (GMAIL_ADDRESS / GMAIL_APP_PASSWORD in .env).
   email:
     sender: redfin.com
@@ -46,31 +56,38 @@ real_estate:
   # zip -> city. Listings outside these zips are dropped.
   zips:                         # example; set your own in settings.local.yaml
     "94103": San Francisco
-  # Mon + Thu evening. Freddie Mac PMMS publishes Thursdays ~noon ET.
-  schedule: {day_of_week: "mon,thu", hour: 18, minute: 0}
-  recipients: [me, partner]
+  # Check Gmail for new Redfin emails every 2 hours, 7am–9pm; silent unless something is new.
+  # New listings / price changes / back-on-market arrive as photo messages; sold + suggestions as text.
+  alerts_schedule: {minute: 0, hour: "7-21/2"}   # 7, 9, 11am, 1, 3, 5, 7, 9pm
+  photos: true
 
-mortgage:
+mortgage:                       # sent to everyone with the realestate feature
   series: [MORTGAGE30US, MORTGAGE15US]
+  schedule: {day_of_week: thu, hour: 18, minute: 0}   # Freddie Mac publishes Thursdays ~noon ET
 
-# Module C — market digest
+# Module C — morning market brief (per person: their portfolio + watchlist, managed in the bot with
+# /portfolio and /watch). For each stock with real news Gemini writes what happened / why it matters /
+# what to watch, citing headlines; plus the day's biggest market-wide stories.
 market:
   enabled: true
-  watchlist: [SPY, QQQ, DIA, IWM]  # indexes only; put your tickers in settings.local.yaml
-  movers_count: 8               # top N day gainers
-  min_market_cap: 2000000000    # ignore micro-caps in movers list
-  volume_spike_ratio: 3.0       # volume / 3-month avg volume
-  news_feeds:
-    - https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC,SPY,QQQ&region=US&lang=en-US
+  indexes: {SPY: S&P 500, QQQ: Nasdaq-100, DIA: Dow, IWM: Russell 2000}
+  news:
+    max_age_hours: 30           # ignore older headlines
+    per_ticker: 8               # headlines per stock sent to Gemini (Google News + Yahoo, fluff filtered)
+    include_funds: false        # ETFs are covered by market stories instead
+  news_feeds:                   # market-wide stories
+    - https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en
+    - https://news.google.com/rss/search?q=stock+market+OR+IPO+OR+merger+when:1d&hl=en-US&gl=US&ceid=US:en
     - https://www.cnbc.com/id/20910258/device/rss/rss.html      # CNBC markets
     - https://feeds.content.dowjones.io/public/rss/mw_bulletins # MarketWatch bulletins
-  max_headlines: 15
-  max_headline_age_hours: 30    # drop stale items (some feeds stop updating silently)
+  max_headlines: 25
   llm:
-    enabled: true               # needs GEMINI_API_KEY in .env; falls back to plain headlines
-  # Weekdays 1:30pm PT = 30 min after US market close
-  schedule: {day_of_week: "mon-fri", hour: 13, minute: 30}
-  recipients: [me, partner]
+    enabled: true               # needs GEMINI_API_KEY; falls back to prices + raw headlines
+  # One-time starting lists per profile, applied only while that person has no tickers in the bot.
+  # After that the bot's database is the source of truth (/portfolio add|del, /watch add|del).
+  seed_lists: {}                # e.g. {me: {portfolio: [IBM], watch: [KO]}} — put real ones in settings.local.yaml
+  # Weekdays 8:30am PT = 2h after the US open, before most decisions get made.
+  schedule: {day_of_week: "mon-fri", hour: 8, minute: 30}
 
 # Module D — credit cards (card definitions: config/cards.yaml + cards.local.yaml)
 cards:

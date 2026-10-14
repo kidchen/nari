@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS processed_emails (
     message_id  TEXT PRIMARY KEY,
     processed   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tickers (
+    profile     TEXT NOT NULL,
+    list_name   TEXT NOT NULL,         -- portfolio | watch
+    symbol      TEXT NOT NULL,
+    added       TEXT NOT NULL,
+    PRIMARY KEY (profile, list_name, symbol)
+);
 CREATE TABLE IF NOT EXISTS kv (
     k           TEXT PRIMARY KEY,
     v           TEXT NOT NULL
@@ -121,6 +128,10 @@ class DB:
                 (key, url, address, price, kind, now, now),
             )
 
+    def update_listing_url(self, key: str, url: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE listings SET url=? WHERE key=?", (url, key))
+
     # ---- processed emails / key-value ----------------------------------------
     def processed_email_ids(self) -> set[str]:
         return {r[0] for r in self._conn.execute("SELECT message_id FROM processed_emails")}
@@ -134,6 +145,36 @@ class DB:
     def get_kv(self, k: str) -> str | None:
         row = self._conn.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
         return row[0] if row else None
+
+    # ---- ticker lists ----------------------------------------------------------
+    def tickers(self, profile: str, list_name: str) -> list[str]:
+        rows = self._conn.execute("SELECT symbol FROM tickers WHERE profile=? AND list_name=? ORDER BY added, symbol",
+                                  (profile, list_name))
+        return [r[0] for r in rows]
+
+    def add_tickers(self, profile: str, list_name: str, symbols: list[str]) -> list[str]:
+        """Insert symbols; returns the ones that were newly added."""
+        now = datetime.now(timezone.utc).isoformat()
+        added = []
+        with self.tx() as c:
+            for s in symbols:
+                cur = c.execute("INSERT OR IGNORE INTO tickers(profile, list_name, symbol, added) VALUES (?,?,?,?)",
+                                (profile, list_name, s, now))
+                if cur.rowcount:
+                    added.append(s)
+        return added
+
+    def remove_tickers(self, profile: str, list_name: str, symbols: list[str]) -> list[str]:
+        removed = []
+        with self.tx() as c:
+            for s in symbols:
+                if c.execute("DELETE FROM tickers WHERE profile=? AND list_name=? AND symbol=?",
+                             (profile, list_name, s)).rowcount:
+                    removed.append(s)
+        return removed
+
+    def has_any_tickers(self, profile: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM tickers WHERE profile=? LIMIT 1", (profile,)).fetchone() is not None
 
     def kv_like(self, pattern: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self._conn.execute("SELECT k, v FROM kv WHERE k LIKE ?", (pattern,))]
