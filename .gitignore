@@ -1,0 +1,18 @@
+# secrets & private config — never commit
+.env
+.deploy.env
+config/*.local.yaml
+spec.md
+samples/
+
+# runtime / local
+data/*
+!data/.gitkeep
+.claude/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.tar.gz
+*.log
+.DS_Store

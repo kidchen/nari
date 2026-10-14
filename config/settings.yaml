@@ -1,0 +1,80 @@
+# Nari automation hub — PUBLIC defaults (committed to git).
+# Put your real values in config/settings.local.yaml (git-ignored); it is deep-merged over this file:
+# dicts merge key by key, lists and scalars replace, `key: null` deletes a key, and a dict with
+# `_replace: true` replaces that whole section (use it for profiles and zips).
+# Secrets (tokens, passwords) live in .env.
+
+timezone: America/Los_Angeles
+
+# People who can register with the bot: /start <INVITE_CODE>, then tap your name.
+profiles:
+  me:
+    name: Me
+    primary: true        # receives admin-only messages (placeholder image, job errors) and can /run jobs
+  partner:
+    name: Partner
+
+# Module A — monthly parking placeholder (clearly watermarked, no vendor branding)
+placeholder:
+  enabled: true
+  label: Monthly parking
+  amount: "$0.00"
+  schedule: {day: 1, hour: 8, minute: 0}
+  recipients: [me]
+
+# Shared Gemini (Google AI Studio) settings. GEMINI_API_KEY in .env.
+llm:
+  # Tried in order. Benchmarked 2026-10-13 (3 calls each, free tier): 3.6-flash, 3.5-flash-lite and
+  # 3.1-flash-lite were 3/3 OK; 3.8/3.7-flash 0/3 (503); 3.5-flash 2/3. Avoid "-latest" aliases
+  # (they change underneath you; flash-latest took 111s once). gemini-2.5-* is closed to new keys.
+  # Free-tier RPM: 3.6/3.7/3.8-flash = 5/min, 3.5/3.1-flash-lite = 60/min. Usage is ~1 call/weekday
+  # for the digest, so RPM isn't a constraint there; 429s fall through to the next model anyway.
+  models: [gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite]          # market catalysts
+  extraction_models: [gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash]  # Redfin email fallback (bursty)
+  timeout_seconds: 45
+
+# Module B — real estate + mortgage rates
+real_estate:
+  enabled: true
+  max_price: 1000000
+  # Source: Redfin saved-search alert emails in Gmail (GMAIL_ADDRESS / GMAIL_APP_PASSWORD in .env).
+  email:
+    sender: redfin.com
+    mailbox: INBOX
+    lookback_days: 14           # emails older than this are ignored; processed ones are never re-read
+    llm_fallback: true          # use Gemini if a Redfin email layout isn't recognized
+  # zip -> city. Listings outside these zips are dropped.
+  zips:                         # example; set your own in settings.local.yaml
+    "94103": San Francisco
+  # Mon + Thu evening. Freddie Mac PMMS publishes Thursdays ~noon ET.
+  schedule: {day_of_week: "mon,thu", hour: 18, minute: 0}
+  recipients: [me, partner]
+
+mortgage:
+  series: [MORTGAGE30US, MORTGAGE15US]
+
+# Module C — market digest
+market:
+  enabled: true
+  watchlist: [SPY, QQQ, DIA, IWM]  # indexes only; put your tickers in settings.local.yaml
+  movers_count: 8               # top N day gainers
+  min_market_cap: 2000000000    # ignore micro-caps in movers list
+  volume_spike_ratio: 3.0       # volume / 3-month avg volume
+  news_feeds:
+    - https://feeds.finance.yahoo.com/rss/2.0/headline?s=%5EGSPC,SPY,QQQ&region=US&lang=en-US
+    - https://www.cnbc.com/id/20910258/device/rss/rss.html      # CNBC markets
+    - https://feeds.content.dowjones.io/public/rss/mw_bulletins # MarketWatch bulletins
+  max_headlines: 15
+  max_headline_age_hours: 30    # drop stale items (some feeds stop updating silently)
+  llm:
+    enabled: true               # needs GEMINI_API_KEY in .env; falls back to plain headlines
+  # Weekdays 1:30pm PT = 30 min after US market close
+  schedule: {day_of_week: "mon-fri", hour: 13, minute: 30}
+  recipients: [me, partner]
+
+# Module D — credit cards (card definitions: config/cards.yaml + cards.local.yaml)
+cards:
+  enabled: true
+  quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 9, minute: 0}
+  offer_reminder_schedule: {hour: 9, minute: 5}
+  offer_reminder_days: [7, 1]   # remind N days before an offer expires

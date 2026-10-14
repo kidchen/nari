@@ -1,0 +1,23 @@
+# Card catalog — PUBLIC example (committed). Put your real cards in config/cards.local.yaml
+# (git-ignored), which is deep-merged over this file. Start it with `cards: {_replace: true, ...}`
+# to drop this example.
+#
+# rates: fixed category earn rates (percent or points-per-dollar). "other" = everything else.
+# rotating: quarterly 5% categories. Fill in each quarter from the issuer's calendar or with
+#           /setcats in Telegram — the bot never guesses categories.
+
+cards:
+  example_card:
+    name: Example Rotating Cash Back
+    owner: me
+    unit: "%"
+    rates:
+      other: 1
+    rotating:
+      rate: 5
+      cap_per_quarter: 1500       # spend cap per quarter for the 5% rate
+      requires_activation: true
+      calendar_url: https://www.discover.com/credit-cards/cash-back/cashback-calendar.html
+      quarters:
+        # Format: "YYYYQn": [category, ...]   e.g. "2026Q4": [Amazon.com, Target]
+        "2026Q4": []

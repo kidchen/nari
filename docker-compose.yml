@@ -1,0 +1,23 @@
+name: nari                    # fixed project name: same container/volume whatever the folder is called
+
+services:
+  nari:
+    build: .
+    image: nari:latest
+    container_name: nari
+    env_file: .env              # secrets; never baked into the image
+    volumes:
+      - ./config:/app/config:ro # settings.yaml / cards.yaml ship with each release
+      - nari-data:/app/data     # SQLite: registrations, offers, seen listings — survives deploys
+    restart: unless-stopped
+    init: true                  # forwards SIGTERM so the bot and scheduler stop cleanly
+    stop_grace_period: 20s
+    # Do NOT scale: a second replica makes Telegram reject polling ("Conflict") and duplicates jobs.
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  nari-data:
+    name: nari-data             # fixed name so deploy.sh can migrate/back it up predictably
+    external: true              # created by deploy.sh (or: docker volume create nari-data)
