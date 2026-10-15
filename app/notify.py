@@ -4,13 +4,18 @@ from __future__ import annotations
 import io
 import logging
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
 from app.db import DB
 
 log = logging.getLogger(__name__)
 TELEGRAM_LIMIT = 4096
+
+
+def buttons(items: list[tuple[str, str]]) -> InlineKeyboardMarkup | None:
+    """One button per row from (label, callback_data) pairs; None if empty."""
+    return InlineKeyboardMarkup([[InlineKeyboardButton(l, callback_data=d)] for l, d in items]) if items else None
 
 
 def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
@@ -37,12 +42,13 @@ class Notifier:
         self.bot = bot
         self.db = db
 
-    async def send_text(self, profiles: list[str], html_text: str) -> int:
+    async def send_text(self, profiles: list[str], html_text: str, reply_markup=None) -> int:
         sent = 0
         for chat_id in self.db.chat_ids_for(profiles):
-            for chunk in split_message(html_text):
-                await self.bot.send_message(chat_id, chunk, parse_mode=ParseMode.HTML,
-                                            disable_web_page_preview=True)
+            chunks = split_message(html_text)
+            for i, chunk in enumerate(chunks):
+                await self.bot.send_message(chat_id, chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                                            reply_markup=reply_markup if i == len(chunks) - 1 else None)
             sent += 1
         if not sent:
             log.warning("No registered chats for profiles %s; message dropped", profiles)

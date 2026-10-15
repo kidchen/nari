@@ -1,9 +1,9 @@
-"""SQLite storage: registered users, card offers, seen real-estate listings."""
+"""SQLite storage: registered users, ticker lists, seen real-estate listings, key-value state."""
 from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -13,16 +13,6 @@ CREATE TABLE IF NOT EXISTS users (
     profile     TEXT NOT NULL,
     tg_name     TEXT,
     registered  TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS offers (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    profile     TEXT NOT NULL,
-    card_id     TEXT NOT NULL,
-    merchant    TEXT NOT NULL,
-    description TEXT NOT NULL,
-    expires     TEXT,              -- ISO date, nullable
-    created     TEXT NOT NULL,
-    active      INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS listings (
     key         TEXT PRIMARY KEY,      -- "redfin:<listing id>" or "addr:<address>|<zip>"
@@ -43,6 +33,17 @@ CREATE TABLE IF NOT EXISTS tickers (
     symbol      TEXT NOT NULL,
     added       TEXT NOT NULL,
     PRIMARY KEY (profile, list_name, symbol)
+);
+CREATE TABLE IF NOT EXISTS re_events (
+    id          TEXT PRIMARY KEY,      -- listing key + what happened, e.g. "redfin:123:price_change:1675000"
+    created     TEXT NOT NULL,
+    payload     TEXT NOT NULL          -- JSON: caption / text, optional photo URL
+);
+CREATE TABLE IF NOT EXISTS deliveries (
+    profile     TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    delivered   TEXT NOT NULL,
+    PRIMARY KEY (profile, event_id)
 );
 CREATE TABLE IF NOT EXISTS kv (
     k           TEXT PRIMARY KEY,
@@ -85,34 +86,6 @@ class DB:
         q = ",".join("?" * len(profiles))
         rows = self._conn.execute(f"SELECT chat_id FROM users WHERE profile IN ({q})", profiles)
         return [r["chat_id"] for r in rows]
-
-    # ---- offers ------------------------------------------------------------
-    def add_offer(self, profile: str, card_id: str, merchant: str, description: str,
-                  expires: date | None) -> int:
-        now = datetime.now(timezone.utc).isoformat()
-        with self.tx() as c:
-            cur = c.execute(
-                "INSERT INTO offers(profile, card_id, merchant, description, expires, created) "
-                "VALUES (?,?,?,?,?,?)",
-                (profile, card_id, merchant, description, expires.isoformat() if expires else None, now),
-            )
-            return int(cur.lastrowid)
-
-    def deactivate_offer(self, offer_id: int, profile: str) -> bool:
-        with self.tx() as c:
-            cur = c.execute("UPDATE offers SET active=0 WHERE id=? AND profile=? AND active=1",
-                            (offer_id, profile))
-            return cur.rowcount > 0
-
-    def active_offers(self, profile: str | None = None, today: date | None = None) -> list[sqlite3.Row]:
-        today_s = (today or date.today()).isoformat()
-        sql = "SELECT * FROM offers WHERE active=1 AND (expires IS NULL OR expires >= ?)"
-        args: list = [today_s]
-        if profile:
-            sql += " AND profile=?"
-            args.append(profile)
-        sql += " ORDER BY expires IS NULL, expires, merchant"
-        return list(self._conn.execute(sql, args))
 
     # ---- listings ----------------------------------------------------------
     def get_listing(self, key: str) -> sqlite3.Row | None:
@@ -175,6 +148,31 @@ class DB:
 
     def has_any_tickers(self, profile: str) -> bool:
         return self._conn.execute("SELECT 1 FROM tickers WHERE profile=? LIMIT 1", (profile,)).fetchone() is not None
+
+    # ---- per-person delivery of real-estate events ------------------------------
+    def add_event(self, event_id: str, payload: dict) -> bool:
+        """Store an event once; returns True if it is new."""
+        import json
+        with self.tx() as c:
+            return c.execute("INSERT OR IGNORE INTO re_events(id, created, payload) VALUES (?,?,?)",
+                             (event_id, datetime.now(timezone.utc).isoformat(), json.dumps(payload))).rowcount > 0
+
+    def undelivered_events(self, profile: str, since_iso: str) -> list[tuple[str, dict]]:
+        import json
+        rows = self._conn.execute(
+            "SELECT e.id, e.payload FROM re_events e WHERE e.created >= ? AND NOT EXISTS "
+            "(SELECT 1 FROM deliveries d WHERE d.profile=? AND d.event_id=e.id) ORDER BY e.created, e.rowid",
+            (since_iso, profile))
+        return [(r[0], json.loads(r[1])) for r in rows]
+
+    def mark_delivered(self, profile: str, event_id: str) -> None:
+        with self.tx() as c:
+            c.execute("INSERT OR IGNORE INTO deliveries(profile, event_id, delivered) VALUES (?,?,?)",
+                      (profile, event_id, datetime.now(timezone.utc).isoformat()))
+
+    def registered_at(self, profile: str) -> str | None:
+        row = self._conn.execute("SELECT min(registered) FROM users WHERE profile=?", (profile,)).fetchone()
+        return row[0] if row else None
 
     def kv_like(self, pattern: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self._conn.execute("SELECT k, v FROM kv WHERE k LIKE ?", (pattern,))]

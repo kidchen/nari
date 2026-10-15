@@ -6,6 +6,7 @@ spec.md
 samples/
 
 # runtime / local
+backups/
 data/*
 !data/.gitkeep
 .claude/

@@ -13,7 +13,7 @@ RUN pip install -r requirements.txt
 COPY app ./app
 
 # uid 1000 = opc on the OCI VM; /app/data is the nari-data volume.
-RUN useradd --create-home --uid 1000 nari && mkdir -p /app/data && chown nari /app/data
+RUN useradd --create-home --uid 1000 nari && mkdir -p /app/data /app/backups && chown nari /app/data /app/backups
 USER nari
 
 # The bot refreshes this file every 30s once Telegram is connected and the scheduler runs.

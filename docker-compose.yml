@@ -8,7 +8,8 @@ services:
     env_file: .env              # secrets; never baked into the image
     volumes:
       - ./config:/app/config:ro # settings.yaml / cards.yaml ship with each release
-      - nari-data:/app/data     # SQLite: registrations, offers, seen listings — survives deploys
+      - nari-data:/app/data     # SQLite: registrations, lists, seen listings, card quarters — survives deploys
+      - nari-backups:/app/backups  # weekly SQLite backups (separate volume; deploy.sh also copies the newest to your Mac)
     restart: unless-stopped
     init: true                  # forwards SIGTERM so the bot and scheduler stop cleanly
     stop_grace_period: 20s
@@ -21,3 +22,6 @@ volumes:
   nari-data:
     name: nari-data             # fixed name so deploy.sh can migrate/back it up predictably
     external: true              # created by deploy.sh (or: docker volume create nari-data)
+  nari-backups:
+    name: nari-backups
+    external: true

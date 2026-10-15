@@ -1,0 +1,7 @@
+[Unit]
+Description=Nari bot watchdog (alerts admin on Telegram if the container is down)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/nari-watchdog @ENV_FILE@

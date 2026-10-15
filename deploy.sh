@@ -78,7 +78,7 @@ fi
 EXCLUDES=(
   --exclude=.venv --exclude=.git --exclude=.env --exclude=.claude --exclude=.idea --exclude=.vscode
   --exclude=__pycache__ --exclude='*.pyc' --exclude=.pytest_cache --exclude=.DS_Store
-  --exclude=./data --exclude=./tests --exclude=./samples --exclude='*.log' --exclude='*.tar.gz'
+  --exclude=./data --exclude=./backups --exclude=./tests --exclude=./samples --exclude='*.log' --exclude='*.tar.gz'
   --exclude=./deploy.sh --exclude=.deploy.env --exclude='.env.*' --exclude=./spec.md
 )
 TAR_FLAGS=()
@@ -170,7 +170,8 @@ cd "$dir"
 
 docker compose build
 
-# The data volume is external (survives `docker compose down`); create it on first deploy.
+# Volumes are external (survive `docker compose down`); create them on first deploy.
+docker volume inspect nari-backups >/dev/null 2>&1 || docker volume create nari-backups >/dev/null
 if ! docker volume inspect nari-data >/dev/null 2>&1; then
   docker volume create nari-data >/dev/null
   # One-time migration from the old layout (bind-mounted ./data) into the volume.
@@ -210,9 +211,27 @@ if [ "$healthy" != "1" ]; then
   exit 1
 fi
 docker image prune -f >/dev/null 2>&1 || true
+
+# Host watchdog: alerts the admin when the container itself is down (installed/updated idempotently).
+sudo install -m 755 deploy/watchdog.sh /usr/local/bin/nari-watchdog
+sed "s#@ENV_FILE@#$HOME/$dir/.env#" deploy/nari-watchdog.service | sudo tee /etc/systemd/system/nari-watchdog.service >/dev/null
+sudo install -m 644 deploy/nari-watchdog.timer /etc/systemd/system/nari-watchdog.timer
+sudo systemctl daemon-reload && sudo systemctl enable --now nari-watchdog.timer >/dev/null 2>&1
+echo "watchdog: $(systemctl is-active nari-watchdog.timer)"
 echo "DEPLOY_OK"
 REMOTE_SCRIPT
 
 ok "deployed to $REMOTE:~/$REMOTE_DIR"
+
+# Off-VM copy of the newest weekly backup (git-ignored backups/ folder, newest 8 kept).
+mkdir -p backups
+LOCAL_BAK="backups/nari-$(date +%Y%m%d).db"
+if remote "docker run --rm -v nari-backups:/b --entrypoint sh nari:latest -c 'f=\$(ls -1t /b/nari-*.db 2>/dev/null | head -1); [ -n \"\$f\" ] && cat \"\$f\"'" > "$LOCAL_BAK.part" 2>/dev/null \
+   && [ -s "$LOCAL_BAK.part" ]; then
+  mv "$LOCAL_BAK.part" "$LOCAL_BAK"; ok "copied newest server backup to $LOCAL_BAK"
+  ls -1t backups/nari-*.db | tail -n +9 | xargs rm -f 2>/dev/null || true
+else
+  rm -f "$LOCAL_BAK.part"; warn "no server backup yet (weekly, Sundays 03:30; or /run backup)"
+fi
 printf '\nUseful:\n  ssh %s "cd %s && docker compose logs -f nari"\n  ssh %s "cd %s && docker compose restart"   # after editing config on the server\n' \
   "$REMOTE" "$REMOTE_DIR" "$REMOTE" "$REMOTE_DIR"

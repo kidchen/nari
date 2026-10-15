@@ -8,17 +8,22 @@ timezone: America/Los_Angeles
 
 # People who can register with the bot: /start <INVITE_CODE>, then tap your name.
 # features: what each person may get — "all" or a list of: market, realestate, cards, placeholder.
+# Admin-only features (placeholder) are only ever given to the primary profile.
 # Within that, people pause/resume their own features in the bot (/features, /pause, /resume).
 profiles:
   me:
     name: Me
     primary: true        # gets job-error alerts, /status and /run
     features: all
+    # email_from: [me@example.com]   # forwarded 5% emails from this address are this person's
+    # placeholder: {label: Monthly parking, amount: "$100.00"}
+    # real_estate: {zips: ["94110"], max_price: 1500000, searches: [my search]}   # narrow your own alerts
   partner:
     name: Partner
     features: [realestate]
 
-# Module A — monthly parking placeholder (clearly watermarked, no vendor branding)
+# Module A — monthly parking placeholder (clearly watermarked, no vendor branding). ADMIN ONLY.
+# Defaults below; override label/amount with profiles.<admin id>.placeholder.
 placeholder:
   enabled: true
   label: Monthly parking
@@ -56,10 +61,14 @@ real_estate:
   # zip -> city. Listings outside these zips are dropped.
   zips:                         # example; set your own in settings.local.yaml
     "94103": San Francisco
-  # Check Gmail for new Redfin emails every 2 hours, 7am–9pm; silent unless something is new.
+  # Gmail check every 2 hours, 7am–9pm: ONE IMAP login per check covers Redfin alerts and the issuers'
+  # 5% card emails (see cards.email). Silent unless something is new.
   # New listings / price changes / back-on-market arrive as photo messages; sold + suggestions as text.
   alerts_schedule: {minute: 0, hour: "7-21/2"}   # 7, 9, 11am, 1, 3, 5, 7, 9pm
   photos: true
+  # Alerts are delivered per person. Someone who registers or resumes later gets the alerts from the
+  # last N days they haven't seen (never older than their registration).
+  catch_up_days: 3
 
 mortgage:                       # sent to everyone with the realestate feature
   series: [MORTGAGE30US, MORTGAGE15US]
@@ -81,17 +90,51 @@ market:
     - https://www.cnbc.com/id/20910258/device/rss/rss.html      # CNBC markets
     - https://feeds.content.dowjones.io/public/rss/mw_bulletins # MarketWatch bulletins
   max_headlines: 25
+  # Names headlines use for a company, when Yahoo's legal name differs (used for news search and to check
+  # that a cited headline is really about that stock). Add your own in settings.local.yaml.
+  aliases: {GOOGL: [Google], "BRK-B": [Berkshire]}
   llm:
     enabled: true               # needs GEMINI_API_KEY; falls back to prices + raw headlines
   # One-time starting lists per profile, applied only while that person has no tickers in the bot.
   # After that the bot's database is the source of truth (/portfolio add|del, /watch add|del).
   seed_lists: {}                # e.g. {me: {portfolio: [IBM], watch: [KO]}} — put real ones in settings.local.yaml
-  # Weekdays 8:30am PT = 2h after the US open, before most decisions get made.
+  # Weekdays 8:30am PT = 2h after the US open: what's moving today.
   schedule: {day_of_week: "mon-fri", hour: 8, minute: 30}
+  # Weekdays 4:30pm PT = after the close: the day's summary + what's coming (econ data, Fed, earnings, IPOs).
+  evening_schedule: {day_of_week: "mon-fri", hour: 16, minute: 30}
+  ahead_days: 14
 
-# Module D — credit cards (card definitions: config/cards.yaml + cards.local.yaml)
+# Module D — quarterly 5% categories (cards: config/cards.yaml + cards.local.yaml)
+# Fully automatic: issuers email "activate your 5%" before each quarter and "activated" after. Forward those
+# to the bot's Gmail (e.g. an Outlook rule); the 2-hourly Gmail check reads categories + activation status.
 cards:
   enabled: true
-  quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 9, minute: 0}
-  offer_reminder_schedule: {hour: 9, minute: 5}
-  offer_reminder_days: [7, 1]   # remind N days before an offer expires
+  email:
+    subject: "5%"                 # IMAP subject search
+    mailboxes: [INBOX, "[Gmail]/Spam"]   # forwarded bank mail often lands in Spam
+    lookback_days: 120            # announcements arrive ~a month before the quarter
+    senders: [discover.com, chase.com]   # direct senders; forwarding addresses go in profiles.<id>.email_from
+  quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 9, minute: 0}    # this quarter's plan
+  activation_reminder_schedule: {month: "1,4,7,10", day: 15, hour: 9, minute: 0}  # only if not activated
+
+# Data retention + backups (see app/maintenance.py for what is kept how long)
+maintenance:
+  cleanup_schedule: {hour: 3, minute: 0}                      # nightly prune; VACUUM on Sundays
+  backup_schedule: {day_of_week: sun, hour: 3, minute: 30}    # weekly SQLite backup into the nari-backups volume
+  backup_keep: 8
+
+# VM health (admin only): alarms once when a threshold is crossed and once on recovery; /health on demand.
+# The host watchdog (deploy/watchdog.sh, installed by deploy.sh) alarms when the bot container itself is down.
+vm_health:
+  enabled: true
+  schedule: {minute: "*/10"}
+  oci: true                     # instance-principal OCI metrics; needs the dynamic group + policy (README)
+  thresholds:
+    disk_pct: 85
+    mem_pct: 90
+    load_per_core: 2.0          # 15-minute load average per core
+    swap_pct: 50
+    restarts_24h: 3
+    backup_max_age_days: 9      # weekly backups + 2 days slack
+    job_failures: 3             # same job failing this many times ...
+    job_failures_hours: 6       # ... within this many hours

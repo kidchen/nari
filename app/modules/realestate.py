@@ -10,7 +10,7 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Any, Iterable
 
 from app.db import DB
 
@@ -161,15 +161,40 @@ def alert_items(d: Diff, search: str = "") -> list[tuple[Listing, str]]:
     return items
 
 
+def summary_items(d: Diff) -> list[tuple[Listing, str, str]]:
+    """(listing, group, line) for sold homes and Redfin's suggestions — grouped into one text per person."""
+    items = [(l, "sold", _fmt(l) + (f" (listed ${l.was_price:,})" if l.was_price else "")) for l in d.sold]
+    return items + [(l, "similar", _fmt(l)) for l in d.similar]
+
+
+def format_summary(lines: dict[str, list[str]], searches: list[str]) -> str | None:
+    if not any(lines.values()):
+        return None
+    out = ["🏡 <b>Redfin</b>" + (" — " + "; ".join(f"“{html.escape(s)}”" for s in searches) if searches else "")]
+    if sold := lines.get("sold"):
+        out += ["", f"<b>🏷️ Sold ({len(sold)})</b>", *sold]
+    if similar := lines.get("similar"):
+        out += ["", f"<b>🏘️ Similar homes Redfin suggests ({len(similar)})</b> <i>— may be outside your search</i>",
+                *similar[:6]]
+    return "\n".join(out)
+
+
 def summary_text(d: Diff, searches: list[str]) -> str | None:
     """One text message for sold homes and Redfin's suggestions (no photos), or None if neither."""
-    if not (d.sold or d.similar):
-        return None
-    lines = ["🏡 <b>Redfin</b>" + (" — " + "; ".join(f"“{html.escape(s)}”" for s in searches) if searches else "")]
-    if d.sold:
-        lines += ["", f"<b>🏷️ Sold ({len(d.sold)})</b>"]
-        lines += [_fmt(l) + (f" (listed ${l.was_price:,})" if l.was_price else "") for l in d.sold]
-    if d.similar:
-        lines += ["", f"<b>🏘️ Similar homes Redfin suggests ({len(d.similar)})</b> <i>— may be outside your search</i>"]
-        lines += [_fmt(l) for l in d.similar[:6]]
-    return "\n".join(lines)
+    grouped: dict[str, list[str]] = {}
+    for _, group, line in summary_items(d):
+        grouped.setdefault(group, []).append(line)
+    return format_summary(grouped, searches)
+
+
+def matches_person(prefs: dict[str, Any] | None, zip_code: str, city: str, price: int, search: str) -> bool:
+    """A person's own narrowing of the household's alerts (profiles.<id>.real_estate). Empty = everything."""
+    if not prefs:
+        return True
+    if (zips := prefs.get("zips")) and zip_code not in {str(z) for z in zips} and city not in zips:
+        return False
+    if (cap := prefs.get("max_price")) and price > cap:
+        return False
+    if (names := prefs.get("searches")) and search and not any(search.lower().startswith(n.lower()) for n in names):
+        return False
+    return True

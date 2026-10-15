@@ -3,8 +3,8 @@
 # to drop this example.
 #
 # rates: fixed category earn rates (percent or points-per-dollar). "other" = everything else.
-# rotating: quarterly 5% categories. Fill in each quarter from the issuer's calendar or with
-#           /setcats in Telegram — the bot never guesses categories.
+# rotating: quarterly 5% categories, read automatically from the issuer's emails (see settings
+#           cards.email). /setcats corrects a quarter manually; the bot never guesses categories.
 
 cards:
   example_card:
@@ -14,10 +14,10 @@ cards:
     rates:
       other: 1
     rotating:
+      issuer: discover            # discover | chase — categories are read from that issuer's 5% emails
+      confirms_activation: false  # Discover never emails an "activated" confirmation: confirm with the bot's button
       rate: 5
       cap_per_quarter: 1500       # spend cap per quarter for the 5% rate
       requires_activation: true
       calendar_url: https://www.discover.com/credit-cards/cash-back/cashback-calendar.html
-      quarters:
-        # Format: "YYYYQn": [category, ...]   e.g. "2026Q4": [Amazon.com, Target]
-        "2026Q4": []
+      quarters: {}                # optional static fallback: "YYYYQn": [category, ...]

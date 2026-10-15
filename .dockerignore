@@ -13,3 +13,5 @@ samples/
 *.tar.gz
 deploy.sh
 spec.md
+backups/
+deploy/

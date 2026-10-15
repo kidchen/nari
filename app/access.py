@@ -11,23 +11,27 @@ from typing import Any
 
 from app.db import DB
 
+# Admin-only features exist only for the primary profile, whatever other profiles' `features` say.
+ADMIN_FEATURES = {"placeholder", "vmhealth"}
+
 FEATURES: dict[str, str] = {
     "market": "Morning market brief (/brief, /portfolio, /watch)",
     "realestate": "Real estate listings + mortgage rates",
-    "cards": "Card plans, rotating categories, offer reminders",
-    "placeholder": "Monthly parking placeholder image",
+    "cards": "Quarterly 5% categories + activation reminders",
+    "placeholder": "Monthly parking placeholder image (admin only)",
+    "vmhealth": "VM health alarms + /health (admin only)",
 }
 
 
 class Access:
     def __init__(self, profiles: dict[str, dict[str, Any]], db: DB):
         self.profiles, self.db = profiles, db
+        self.admin = next((pid for pid, p in profiles.items() if p.get("primary")), next(iter(profiles), None))
 
     def allowed(self, pid: str) -> list[str]:
         spec = (self.profiles.get(pid) or {}).get("features", "all")
-        if spec in (None, "all"):
-            return list(FEATURES)
-        return [f for f in FEATURES if f in spec]
+        names = list(FEATURES) if spec in (None, "all") else [f for f in FEATURES if f in spec]
+        return [f for f in names if f not in ADMIN_FEATURES or pid == self.admin]
 
     def paused(self, pid: str) -> list[str]:
         raw = self.db.get_kv(f"paused:{pid}")

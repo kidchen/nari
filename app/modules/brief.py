@@ -147,8 +147,10 @@ def clean_headlines(rows: list[tuple[str, str, str, float]], prefix: str, limit:
     return out
 
 
-def fetch_ticker_news(f: TickerFacts, max_age_h: float, limit: int, now: float) -> list[Headline]:
-    q = urllib.parse.quote(f'"{short_name(f.name)}" stock when:{max(1, round(max_age_h / 24))}d')
+def fetch_ticker_news(f: TickerFacts, max_age_h: float, limit: int, now: float,
+                      aliases: list[str] | None = None) -> list[Headline]:
+    names = " OR ".join(f'"{n}"' for n in dict.fromkeys([short_name(f.name), *(aliases or [])]))
+    q = urllib.parse.quote(f'({names}) stock when:{max(1, round(max_age_h / 24))}d')
     rows = _parse_feed(GNEWS_SEARCH.format(q=q), max_age_h, now)
     rows += _parse_feed(YAHOO_TICKER_RSS.format(symbol=f.symbol), max_age_h, now)
     return clean_headlines(rows, f"{f.symbol}-", limit)
@@ -248,15 +250,39 @@ def parse_llm(raw: str | None) -> dict[str, Any] | None:
 
 # ---- formatting -----------------------------------------------------------------
 
+def _esc(text: str) -> str:
+    """Escape for Telegram HTML text (apostrophes/quotes stay readable)."""
+    return html.escape(text, quote=False)
+
+
 REACTION = {"positive": "🟢", "negative": "🔴", "mixed": "🟡", "neutral": "⚪"}
 SPECIFIC_TYPES = {"earnings", "guidance", "product", "sales_data", "deal", "ipo", "contract", "regulatory", "legal",
                   "executive", "analyst", "other_specific"}
 BARE_DATE_RE = re.compile(r"^(on )?([A-Z][a-z]{2,8}\.? \d{1,2}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2})$")
 
 
-def keep_item(it: dict) -> bool:
-    """Drop items that are just 'moved with the market' — the model is told to skip them, lite models don't."""
-    return str(it.get("type", "")).lower() in SPECIFIC_TYPES and bool(str(it.get("what", "")).strip())
+def name_terms(f: "TickerFacts", aliases: dict[str, list[str]] | None = None) -> list[str]:
+    """Lower-case words that identify the company in a headline: symbol, distinctive name words, aliases."""
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z&'\-]+", short_name(f.name)) if len(w) >= 4]
+    return [t.lower() for t in [f.symbol, *words[:2], *((aliases or {}).get(f.symbol, []))]]
+
+
+def mentions(headline: str, terms: list[str]) -> bool:
+    h = headline.lower()
+    return any(re.search(rf"(?<![a-z]){re.escape(t)}", h) for t in terms)
+
+
+def keep_item(it: dict, f: "TickerFacts | None" = None, by_id: dict | None = None,
+              aliases: dict[str, list[str]] | None = None) -> bool:
+    """Drop 'moved with the market' items and items whose cited headlines aren't about this company
+    (the model is told both rules; lite models don't always follow them)."""
+    if str(it.get("type", "")).lower() not in SPECIFIC_TYPES or not str(it.get("what", "")).strip():
+        return False
+    if f is None or by_id is None:
+        return True
+    cited = [by_id[str(i)].title for i in it.get("sources") or [] if str(i) in by_id]
+    terms = name_terms(f, aliases)
+    return any(mentions(t, terms) for t in cited)
 
 
 def fix_watch(watch: str, f: "TickerFacts | None") -> str:
@@ -284,7 +310,7 @@ def _sources(ids: list[str], by_id: dict[str, Headline]) -> str:
     for i in ids[:3]:
         h = by_id.get(str(i))
         if h and h.link:
-            links.append(f'<a href="{html.escape(h.link)}">{html.escape(h.source or "source")}</a>')
+            links.append(f'<a href="{html.escape(h.link)}">{html.escape(h.source or "source", quote=False)}</a>')
     return " · ".join(links)
 
 
@@ -296,12 +322,12 @@ def _items(title: str, items: list[dict], facts: dict[str, TickerFacts], by_id: 
         if not f:
             continue
         icon = REACTION.get(str(it.get("reaction", "")).lower(), "⚪")
-        lines.append(f"{icon} {_price_line(f, today)} — {html.escape(str(it.get('what', '')))}")
+        lines.append(f"{icon} {_price_line(f, today)} — {_esc(str(it.get('what', '')))}")
         tail = []
         if it.get("why"):
-            tail.append(html.escape(str(it["why"])))
+            tail.append(_esc(str(it["why"])))
         if watch := fix_watch(str(it.get("watch") or ""), f):
-            tail.append(f"<i>Watch:</i> {html.escape(watch)}")
+            tail.append(f"<i>Watch:</i> {_esc(watch)}")
         if src := _sources(it.get("sources") or [], by_id):
             tail.append(src)
         if tail:
@@ -314,16 +340,18 @@ def _quiet_line(symbols: list[str], facts: dict[str, TickerFacts]) -> str:
 
 
 def format_brief(now: datetime, indexes: list[tuple[str, float]], portfolio: list[str], watch: list[str],
-                 facts: dict[str, TickerFacts], market: list[Headline], llm: dict[str, Any] | None) -> str:
+                 facts: dict[str, TickerFacts], market: list[Headline], llm: dict[str, Any] | None,
+                 aliases: dict[str, list[str]] | None = None) -> str:
     today = now.date()
     by_id = {h.id: h for f in facts.values() for h in f.headlines} | {h.id: h for h in market}
     out = [f"☀️ <b>Morning brief — {now:%a %b %d}</b> <i>(as of {now:%-I:%M%p %Z})</i>"]
     if indexes:
-        out.append(" · ".join(f"{html.escape(label)} {_pct(v)}" for label, v in indexes))
+        out.append(" · ".join(f"{_esc(label)} {_pct(v)}" for label, v in indexes))
 
     if llm:
         for key, title, symbols in (("portfolio", "💼 Portfolio", portfolio), ("watchlist", "👀 Watchlist", watch)):
-            items = [i for i in llm.get(key) or [] if str(i.get("symbol", "")).upper() in symbols and keep_item(i)]
+            items = [i for i in llm.get(key) or [] if str(i.get("symbol", "")).upper() in symbols
+                     and keep_item(i, facts.get(str(i.get("symbol", "")).upper()), by_id, aliases)]
             out += _items(title, items, facts, by_id, today)
             covered = {str(i.get("symbol", "")).upper() for i in items}
             rest = [s for s in symbols if s not in covered]
@@ -335,9 +363,9 @@ def format_brief(now: datetime, indexes: list[tuple[str, float]], portfolio: lis
         if stories:
             out.append("\n<b>🌎 Market stories</b>")
             for st in [st for st in stories if str(st.get("what", "")).strip()][:4]:
-                line = f"• {html.escape(str(st['what']))}"
+                line = f"• {_esc(str(st['what']))}"
                 if st.get("why"):
-                    line += f" — {html.escape(str(st['why']))}"
+                    line += f" — {_esc(str(st['why']))}"
                 if src := _sources(st.get("sources") or [], by_id):
                     line += f" · {src}"
                 out.append(line)
@@ -352,10 +380,10 @@ def format_brief(now: datetime, indexes: list[tuple[str, float]], portfolio: lis
                     continue
                 out.append(_price_line(f, today))
                 for h in f.headlines[:2]:
-                    out.append(f'  • <a href="{html.escape(h.link)}">{html.escape(h.title)}</a>')
+                    out.append(f'  • <a href="{html.escape(h.link)}">{_esc(h.title)}</a>')
         if market:
             out.append("\n<b>🌎 Headlines</b>")
-            out += [f'• <a href="{html.escape(h.link)}">{html.escape(h.title)}</a>' for h in market[:6]]
+            out += [f'• <a href="{html.escape(h.link)}">{_esc(h.title)}</a>' for h in market[:6]]
         out.append("\n<i>(AI summary unavailable today; showing raw headlines.)</i>")
 
     upcoming = sorted((f.earnings, s) for s, f in facts.items()
@@ -383,12 +411,17 @@ class BriefBuilder:
     def __init__(self, settings: dict[str, Any], summarize: Callable[[str], str | None] | None,
                  tz: ZoneInfo, name_cache: dict[str, tuple[str, str]] | None = None):
         self.m = settings["market"]
+        self.aliases: dict[str, list[str]] = {k.upper(): list(v) for k, v in (self.m.get("aliases") or {}).items()}
         self.summarize = summarize
         self.tz = tz
         self.name_cache = name_cache if name_cache is not None else {}
         self.facts: dict[str, TickerFacts] = {}
         self.market: list[Headline] | None = None
         self.indexes: list[tuple[str, float]] | None = None
+        self.econ: list[Event] | None = None
+        self.ipos: list[Event] | None = None
+        self.timing: dict[str, str] = {}
+        self.timing_checked: set[str] = set()
 
     def _ensure(self, symbols: list[str]) -> None:
         now_ts, now_ny = time.time(), datetime.now(NY)
@@ -397,8 +430,8 @@ class BriefBuilder:
             news = self.m.get("news", {})
             for s, f in fetch_facts(missing, now_ny, self.name_cache).items():
                 if not f.is_fund or news.get("include_funds"):
-                    f.headlines = fetch_ticker_news(f, news.get("max_age_hours", 30),
-                                                    news.get("per_ticker", 8), now_ts)
+                    f.headlines = fetch_ticker_news(f, news.get("max_age_hours", 30), news.get("per_ticker", 8),
+                                                    now_ts, self.aliases.get(s))
                 self.facts[s] = f
         if self.market is None:
             news = self.m.get("news", {})
@@ -407,7 +440,38 @@ class BriefBuilder:
         if self.indexes is None:
             self.indexes = index_moves(self.m.get("indexes", {}))
 
-    def build(self, portfolio: list[str], watch: list[str]) -> str:
+    def _ensure_ahead(self, symbols: list[str]) -> None:
+        days = self.m.get("ahead_days", 14)
+        if self.econ is None:
+            self.econ = fetch_economic_events(days)
+            self.ipos = fetch_ipos(days)
+        missing = [s for s in symbols if s not in self.timing_checked]
+        if missing:
+            self.timing.update(fetch_earnings_timing(missing, days))
+            self.timing_checked.update(missing)
+
+    def build_evening(self, portfolio: list[str], watch: list[str]) -> str:
+        symbols = list(dict.fromkeys(portfolio + watch))
+        self._ensure(symbols)
+        self._ensure_ahead(symbols)
+        now, days = datetime.now(self.tz), self.m.get("ahead_days", 14)
+        today = now.date()
+        ahead = [f"- {_when(e.when)}: US {e.what} ({e.detail})" for e in self.econ or []]
+        ahead += [f"- {f.earnings:%a %b %-d}: {s} earnings" + (f" ({self.timing[s]})" if self.timing.get(s) else "")
+                  for s, f in self.facts.items() if s in symbols and f.earnings and 0 <= (f.earnings - today).days <= days]
+        ahead += [f"- {e.when:%a %b %-d}: IPO {e.what}" for e in self.ipos or []]
+        llm_out = None
+        if self.summarize:
+            has_news = lambda s: bool(self.facts[s].headlines)  # noqa: E731
+            prompt = build_evening_prompt([self.facts[s] for s in portfolio if has_news(s)],
+                                          [self.facts[s] for s in watch if has_news(s)], self.market or [], ahead, today)
+            llm_out = parse_llm(self.summarize(prompt))
+        return format_evening(now, self.indexes or [], portfolio, watch, self.facts, self.market or [], llm_out,
+                              self.econ or [], self.ipos or [], self.timing, days, self.aliases)
+
+    def build(self, portfolio: list[str], watch: list[str], mode: str = "morning") -> str:
+        if mode == "evening":
+            return self.build_evening(portfolio, watch)
         self._ensure(list(dict.fromkeys(portfolio + watch)))
         now = datetime.now(self.tz)
         llm_out = None
@@ -418,7 +482,7 @@ class BriefBuilder:
             prompt = build_prompt([self.facts[s] for s in portfolio if has_news(s)],
                                   [self.facts[s] for s in watch if has_news(s)], self.market or [], now.date())
             llm_out = parse_llm(self.summarize(prompt))
-        return format_brief(now, self.indexes or [], portfolio, watch, self.facts, self.market or [], llm_out)
+        return format_brief(now, self.indexes or [], portfolio, watch, self.facts, self.market or [], llm_out, self.aliases)
 
 
 def validate_symbols(symbols: list[str]) -> tuple[list[str], list[str]]:
@@ -433,3 +497,219 @@ def validate_symbols(symbols: list[str]) -> tuple[list[str], list[str]]:
         except Exception:  # noqa: BLE001
             invalid.append(s)
     return valid, invalid
+
+
+# ---- evening: close + look ahead ------------------------------------------------------------
+
+# Market-moving US releases (Yahoo event names vary slightly; match loosely).
+KEY_US_EVENTS = re.compile(
+    r"\bCPI\b|\bPPI\b|Non-?Farm Payroll|Unemployment Rate|\bPCE\b|\bGDP\b|Retail Sales|Fed Funds|FOMC|"
+    r"Initial Jobless|ISM (Manufacturing PMI|N-Mfg PMI|Services PMI)|Consumer Confidence|U Mich Sentiment|"
+    r"JOLTS|Durable Goods, R MM|Housing Starts|Existing Home Sales|New Home Sales", re.I)
+EVENT_NAMES = [  # (pattern, plain name, tier-1?)
+    (r"Fed Funds|FOMC", "Fed rate decision", True), (r"Non-?Farm|Unemployment Rate", "Jobs report", True),
+    (r"\bCPI\b", "CPI inflation", True), (r"\bPCE\b", "PCE inflation", True), (r"\bGDP\b", "GDP", True),
+    (r"\bPPI\b", "PPI", False), (r"Retail Sales", "Retail sales", False), (r"Jobless", "Jobless claims", False),
+    (r"ISM Manufacturing", "ISM manufacturing", False), (r"ISM (N-Mfg|Services)", "ISM services", False),
+    (r"Consumer Confidence", "Consumer confidence", False), (r"U Mich", "Michigan sentiment", False),
+    (r"JOLTS", "Job openings (JOLTS)", False), (r"Durable", "Durable goods", False),
+    (r"Housing Starts", "Housing starts", False), (r"Home Sales", "Home sales", False),
+]
+
+
+def plain_event(name: str) -> tuple[str, bool]:
+    for pat, label, tier1 in EVENT_NAMES:
+        if re.search(pat, name, re.I):
+            return label, tier1
+    return name, False
+
+
+def group_events(events: list[Event], max_days: int = 6) -> list[tuple[date, list[str]]]:
+    """[(day, ['⭐ Fed rate decision', 'PPI', ...])]; days with a tier-1 release are always kept."""
+    days: dict[date, list[tuple[bool, str]]] = {}
+    for e in events:
+        d = e.when.date() if isinstance(e.when, datetime) else e.when
+        label, tier1 = plain_event(e.what)
+        if all(l != label for _, l in days.get(d, [])):
+            days.setdefault(d, []).append((tier1, label))
+    ordered = sorted(days.items())
+    keep = {d for d, items in ordered if any(t for t, _ in items)}
+    for d, _ in ordered:
+        if len(keep) >= max_days:
+            break
+        keep.add(d)
+    return [(d, [("⭐ " if t else "") + l for t, l in sorted(items, key=lambda x: not x[0])])
+            for d, items in ordered if d in keep]
+
+
+IPO_NOISE = re.compile(r"acquisition|spac|\bunits?\b|\betf\b|\btrust\b|\bfund\b|warrant|rights", re.I)
+
+
+@dataclass
+class Event:
+    when: datetime | date
+    what: str
+    detail: str = ""
+
+
+def fetch_economic_events(days: int, pattern: re.Pattern = KEY_US_EVENTS) -> list[Event]:
+    """Key US releases for the next `days` days. Yahoo returns <=100 rows per query counted from the
+    END of the window, so we query one day at a time and page through busy days."""
+    import yfinance as yf
+    from datetime import timedelta
+
+    out, start = [], date.today()
+    for d in range(1, days + 1):
+        day = start + timedelta(days=d)
+        cal, offset = yf.Calendars(start=day, end=day + timedelta(days=1)), 0
+        while True:
+            try:
+                df = cal.get_economic_events_calendar(limit=100, offset=offset)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Economic calendar %s failed: %s", day, e)
+                break
+            if df is None or not len(df):
+                break
+            for name, row in df[df["Region"] == "US"].iterrows():
+                if pattern.search(str(name)):
+                    label = str(name).replace("*", "").strip()
+                    last = row.get("Last")
+                    detail = f"for {row.get('For')}" + (f", last {last:g}" if isinstance(last, (int, float)) and last == last else "")
+                    out.append(Event(row["Event Time"].tz_convert("America/Los_Angeles").to_pydatetime(), label, detail))
+            if len(df) < 100 or offset >= 400:
+                break
+            offset += 100
+    seen, uniq = set(), []
+    for e in sorted(out, key=lambda e: e.when):            # same release often listed several times
+        key = (e.when.date() if isinstance(e.when, datetime) else e.when, re.sub(r"\W+", "", e.what.lower())[:14])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(e)
+    return uniq
+
+
+def fetch_earnings_timing(symbols: list[str], days: int) -> dict[str, str]:
+    """symbol -> 'before open' / 'after close' where Yahoo's earnings calendar knows it."""
+    import yfinance as yf
+    from datetime import timedelta
+
+    timing = {"BMO": "before open", "AMC": "after close"}
+    try:
+        df = yf.Calendars(start=date.today(), end=date.today() + timedelta(days=days)) \
+            .get_earnings_calendar(filter_most_active=False, limit=100)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Earnings calendar failed: %s", e)
+        return {}
+    return {s: timing.get(str(df.loc[s, "Timing"] if not hasattr(df.loc[s, "Timing"], "iloc") else df.loc[s, "Timing"].iloc[0]), "")
+            for s in symbols if s in df.index}
+
+
+def fetch_ipos(days: int, limit: int = 6) -> list[Event]:
+    import yfinance as yf
+    from datetime import timedelta
+
+    try:
+        df = yf.Calendars(start=date.today(), end=date.today() + timedelta(days=days)).get_ipo_info_calendar(limit=100)
+    except Exception as e:  # noqa: BLE001
+        log.warning("IPO calendar failed: %s", e)
+        return []
+    out, seen = [], set()
+    for sym, row in df.iterrows():
+        name = str(row.get("Company") or "")
+        if sym in seen or IPO_NOISE.search(name) or str(row.get("Exchange")) not in ("NYSE", "Nasdaq", "NASDAQ"):
+            continue
+        seen.add(sym)
+        name = re.sub(r"\s+(Common Stock|Class [A-C] Common Stock|Ordinary Shares|Common Shares)$", "", name)
+        if row["Date"].date() > date.today():
+            out.append(Event(row["Date"].date(), f"{name} ({sym})", str(row.get("Exchange"))))
+    return sorted(out, key=lambda e: e.when)[:limit]
+
+
+def build_evening_prompt(portfolio: list[TickerFacts], watch: list[TickerFacts], market: list[Headline],
+                         ahead: list[str], today: date) -> str:
+    def section(title: str, items: list[TickerFacts]) -> list[str]:
+        lines = [f"## {title}"]
+        for f in items:
+            lines.append(_facts_line(f, today))
+            lines += [f"  [{h.id}] {h.title} ({h.source or 'Yahoo'}, {h.age_h}h ago)" for h in f.headlines]
+        return lines
+
+    return "\n".join([
+        "You write a short after-close note for one individual investor: how today went, and what's coming.",
+        "",
+        "RULES",
+        "- Use ONLY the facts, headlines and calendar below. Never invent numbers, dates or events. Cite headline ids.",
+        "- wrap: 2-3 bullets on what drove the US market today (macro data, Fed, sector moves, big company news).",
+        "- portfolio / watchlist: ONLY stocks with a concrete company-specific development today (types: earnings,",
+        "  guidance, product, sales_data, deal, ipo, contract, regulatory, legal, executive, analyst, other_specific).",
+        "  'Moved with the market' is not a development — leave it out.",
+        "- ahead: up to 4 upcoming items from the CALENDAR or headlines that matter for THIS person's stocks or the",
+        "  broad market. 'when' = date from the calendar; 'why' = why it matters for their holdings, factually.",
+        "- No buy/sell/hold recommendations, no price targets of your own, no predictions of price direction.",
+        "- Plain text, no markdown. what <=20 words, why <=20 words.",
+        "",
+        'Return JSON: {"wrap": [{"what", "why", "sources": [ids]}], "portfolio": [{"symbol", "type", "what", "why",',
+        '"reaction": "positive|negative|mixed|neutral", "sources": [ids]}], "watchlist": [same], "ahead": [{"when", "what", "why"}]}',
+        "",
+        *section("Portfolio (today's close)", portfolio), "",
+        *section("Watchlist (today's close)", watch), "",
+        "## Market headlines", *[f"[{h.id}] {h.title} ({h.source or 'feed'}, {h.age_h}h ago)" for h in market], "",
+        "## CALENDAR (next 2 weeks)", *ahead,
+    ])
+
+
+def _when(w: datetime | date) -> str:
+    return f"{w:%a %b %-d %-I:%M%p}".replace(":00", "") if isinstance(w, datetime) else f"{w:%a %b %-d}"
+
+
+def format_evening(now: datetime, indexes: list[tuple[str, float]], portfolio: list[str], watch: list[str],
+                   facts: dict[str, TickerFacts], market: list[Headline], llm: dict[str, Any] | None,
+                   econ: list[Event], ipos: list[Event], timing: dict[str, str], ahead_days: int,
+                   aliases: dict[str, list[str]] | None = None) -> str:
+    today = now.date()
+    by_id = {h.id: h for f in facts.values() for h in f.headlines} | {h.id: h for h in market}
+    out = [f"🌙 <b>Market close — {now:%a %b %d}</b>"]
+    if indexes:
+        out.append(" · ".join(f"{_esc(label)} {_pct(v)}" for label, v in indexes))
+    for title, symbols in (("💼 Portfolio", portfolio), ("👀 Watchlist", watch)):
+        if symbols:
+            out.append(f"\n<b>{title} today:</b> " + ", ".join(
+                f"{s} {_pct(facts[s].change_pct)}" for s in sorted(symbols, key=lambda s: -(abs(facts[s].change_pct or 0)))
+                if s in facts))
+    if llm:
+        for key, title, symbols, cap in (("portfolio", "💼 What moved yours", portfolio, 5),
+                                         ("watchlist", "👀 Watchlist news", watch, 4)):
+            items = [i for i in llm.get(key) or [] if str(i.get("symbol", "")).upper() in symbols
+                     and keep_item(i, facts.get(str(i.get("symbol", "")).upper()), by_id, aliases)]
+            # Evening is a recap: keep the biggest movers with real news, so it stays ~one message.
+            items.sort(key=lambda i: -abs(facts[str(i["symbol"]).upper()].change_pct or 0))
+            out += _items(title, items[:cap], facts, by_id, today)
+        if wrap := [w for w in llm.get("wrap") or [] if str(w.get("what", "")).strip()][:3]:
+            out.append("\n<b>🌎 Today's story</b>")
+            for w in wrap:
+                line = f"• {_esc(str(w['what']))}"
+                if w.get("why"):
+                    line += f" — {_esc(str(w['why']))}"
+                if src := _sources(w.get("sources") or [], by_id):
+                    line += f" · {src}"
+                out.append(line)
+    else:
+        out.append("\n<i>(AI summary unavailable today.)</i>")
+
+    out.append(f"\n🔭 <b>Coming up (next {ahead_days} days)</b>")
+    if llm and (ahead := [a for a in llm.get("ahead") or [] if str(a.get("what", "")).strip()][:4]):
+        for a in ahead:
+            out.append(f"• <b>{_esc(str(a.get('when', '')))}</b> {_esc(str(a['what']))}"
+                       + (f" — {_esc(str(a['why']))}" if a.get("why") else ""))
+    yours = sorted((f.earnings, s) for s, f in facts.items()
+                   if f.earnings and 0 <= (f.earnings - today).days <= ahead_days and s in portfolio + watch)
+    if yours:
+        out.append("📅 <i>Your earnings:</i> " + ", ".join(
+            f"{s} {d:%b %-d}" + (f" ({timing[s]})" if timing.get(s) else "") for d, s in yours))
+    if econ:
+        out.append("🏛️ <i>Key US data:</i> " + " · ".join(
+            f"{d:%a %b %-d}: {_esc(', '.join(items))}" for d, items in group_events(econ)))
+    if ipos:
+        out.append("🔔 <i>IPOs:</i> " + "; ".join(f"{e.when:%b %-d} {_esc(e.what)}" for e in ipos))
+    out.append("\n<i>Informational only — not financial advice.</i>")
+    return "\n".join(out)
