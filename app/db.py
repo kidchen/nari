@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS deliveries (
     delivered   TEXT NOT NULL,
     PRIMARY KEY (profile, event_id)
 );
+CREATE TABLE IF NOT EXISTS biorxiv_history (
+    profile     TEXT NOT NULL,
+    doi         TEXT NOT NULL,
+    sent        TEXT NOT NULL,
+    PRIMARY KEY (profile, doi)
+);
 CREATE TABLE IF NOT EXISTS kv (
     k           TEXT PRIMARY KEY,
     v           TEXT NOT NULL
@@ -68,7 +74,7 @@ class DB:
 
     # ---- users -------------------------------------------------------------
     def register_user(self, chat_id: int, profile: str, tg_name: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO users(chat_id, profile, tg_name, registered) VALUES (?,?,?,?) "
@@ -92,7 +98,7 @@ class DB:
         return self._conn.execute("SELECT * FROM listings WHERE key=?", (key,)).fetchone()
 
     def upsert_listing(self, key: str, url: str, address: str, price: int, kind: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self.tx() as c:
             c.execute(
                 "INSERT INTO listings(key, url, address, price, kind, first_seen, last_seen) "
@@ -110,7 +116,7 @@ class DB:
         return {r[0] for r in self._conn.execute("SELECT message_id FROM processed_emails")}
 
     def mark_emails_processed(self, ids: list[str]) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self.tx() as c:
             c.executemany("INSERT OR IGNORE INTO processed_emails(message_id, processed) VALUES (?,?)",
                           [(i, now) for i in ids])
@@ -127,7 +133,7 @@ class DB:
 
     def add_tickers(self, profile: str, list_name: str, symbols: list[str]) -> list[str]:
         """Insert symbols; returns the ones that were newly added."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         added = []
         with self.tx() as c:
             for s in symbols:
@@ -155,7 +161,7 @@ class DB:
         import json
         with self.tx() as c:
             return c.execute("INSERT OR IGNORE INTO re_events(id, created, payload) VALUES (?,?,?)",
-                             (event_id, datetime.now(timezone.utc).isoformat(), json.dumps(payload))).rowcount > 0
+                             (event_id, datetime.now(UTC).isoformat(), json.dumps(payload))).rowcount > 0
 
     def undelivered_events(self, profile: str, since_iso: str) -> list[tuple[str, dict]]:
         import json
@@ -168,11 +174,21 @@ class DB:
     def mark_delivered(self, profile: str, event_id: str) -> None:
         with self.tx() as c:
             c.execute("INSERT OR IGNORE INTO deliveries(profile, event_id, delivered) VALUES (?,?,?)",
-                      (profile, event_id, datetime.now(timezone.utc).isoformat()))
+                      (profile, event_id, datetime.now(UTC).isoformat()))
 
     def registered_at(self, profile: str) -> str | None:
         row = self._conn.execute("SELECT min(registered) FROM users WHERE profile=?", (profile,)).fetchone()
         return row[0] if row else None
+
+    # ---- bioRxiv (per person) -------------------------------------------------------
+    def biorxiv_sent(self, profile: str) -> set[str]:
+        return {r[0] for r in self._conn.execute("SELECT doi FROM biorxiv_history WHERE profile=?", (profile,))}
+
+    def mark_biorxiv_sent(self, profile: str, dois: list[str]) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self.tx() as c:
+            c.executemany("INSERT OR IGNORE INTO biorxiv_history(profile, doi, sent) VALUES (?,?,?)",
+                          [(profile, d, now) for d in dois])
 
     def kv_like(self, pattern: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self._conn.execute("SELECT k, v FROM kv WHERE k LIKE ?", (pattern,))]

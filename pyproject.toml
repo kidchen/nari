@@ -1,0 +1,24 @@
+[project]
+name = "nari"
+version = "0.1.0"
+description = "Personal automation hub: a per-person Telegram bot (market briefs, real estate, cards, papers)"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, import order, bugbear, pyupgrade
+select = ["F", "E", "W", "I", "B", "UP"]
+ignore = [
+  "E731",   # small lambdas as callbacks are fine here
+  "B008",   # function calls in defaults (dataclass field factories)
+  "E741",   # `l` for "listing" reads fine in short comprehensions
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E702"]   # long assertions and one-line setup read better in tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

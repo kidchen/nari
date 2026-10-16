@@ -11,9 +11,9 @@ import html as htmlmod
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import Callable
 
 log = logging.getLogger(__name__)
 

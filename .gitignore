@@ -1,4 +1,5 @@
 # secrets & private config — never commit
+.privacy-patterns
 .env
 .deploy.env
 config/*.local.yaml
@@ -17,3 +18,4 @@ __pycache__/
 *.tar.gz
 *.log
 .DS_Store
+.ruff_cache/

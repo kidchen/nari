@@ -15,3 +15,9 @@ deploy.sh
 spec.md
 backups/
 deploy/
+.github/
+scripts/
+.privacy-patterns
+requirements-dev.txt
+pyproject.toml
+.ruff_cache/

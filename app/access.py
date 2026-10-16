@@ -11,16 +11,11 @@ from typing import Any
 
 from app.db import DB
 
-# Admin-only features exist only for the primary profile, whatever other profiles' `features` say.
-ADMIN_FEATURES = {"placeholder", "vmhealth"}
 
-FEATURES: dict[str, str] = {
-    "market": "Morning market brief (/brief, /portfolio, /watch)",
-    "realestate": "Real estate listings + mortgage rates",
-    "cards": "Quarterly 5% categories + activation reminders",
-    "placeholder": "Monthly parking placeholder image (admin only)",
-    "vmhealth": "VM health alarms + /health (admin only)",
-}
+def catalog() -> dict[str, tuple[str, bool]]:
+    """{feature name: (description, admin_only)} from the feature registry, in menu order."""
+    from app.features import ALL  # lazy: features import services, which imports this module
+    return {f.name: (f.description, f.admin_only) for f in ALL}
 
 
 class Access:
@@ -29,9 +24,11 @@ class Access:
         self.admin = next((pid for pid, p in profiles.items() if p.get("primary")), next(iter(profiles), None))
 
     def allowed(self, pid: str) -> list[str]:
+        """Admin-only features exist only for the primary profile, whatever other profiles' `features` say."""
+        cat = catalog()
         spec = (self.profiles.get(pid) or {}).get("features", "all")
-        names = list(FEATURES) if spec in (None, "all") else [f for f in FEATURES if f in spec]
-        return [f for f in names if f not in ADMIN_FEATURES or pid == self.admin]
+        names = list(cat) if spec in (None, "all") else [f for f in cat if f in spec]
+        return [f for f in names if not cat[f][1] or pid == self.admin]
 
     def paused(self, pid: str) -> list[str]:
         raw = self.db.get_kv(f"paused:{pid}")
@@ -52,7 +49,7 @@ class Access:
     def describe(self, pid: str) -> str:
         allowed, paused = self.allowed(pid), self.paused(pid)
         lines = []
-        for f, label in FEATURES.items():
+        for f, (label, _admin) in catalog().items():
             if f not in allowed:
                 continue
             state = "⏸️ paused" if f in paused else "✅ on"

@@ -14,6 +14,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -132,7 +133,7 @@ def counter_delta(points: list[float]) -> float:
     """Increase of a cumulative counter over the readings. OCI's aggregated readings sometimes dip
     slightly (ignored); only a drop to under half the previous value is a reboot reset."""
     total = 0.0
-    for a, b in zip(points, points[1:]):
+    for a, b in zip(points, points[1:], strict=False):   # consecutive pairs
         if b >= a:
             total += b - a
         elif b < a / 2:
@@ -144,8 +145,9 @@ def oci_metrics(timeout: float = 20) -> dict[str, Any]:
     """Instance state + OCI agent metrics (last hour). {'error': ...} if not set up / not permitted."""
     try:
         import urllib.request
+        from datetime import datetime, timedelta
+
         import oci
-        from datetime import datetime, timedelta, timezone
 
         req = urllib.request.Request(METADATA, headers={"Authorization": "Bearer Oracle"})
         meta = json.load(urllib.request.urlopen(req, timeout=5))
@@ -155,7 +157,7 @@ def oci_metrics(timeout: float = 20) -> dict[str, Any]:
         compute = oci.core.ComputeClient(cfg, signer=signer, timeout=timeout)
         out["state"] = compute.get_instance(meta["id"]).data.lifecycle_state
         mon = oci.monitoring.MonitoringClient(cfg, signer=signer, timeout=timeout)
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         for metric, q in (("cpu_pct", "CpuUtilization[5m]{resourceId = \"%s\"}.mean()"),
                           ("mem_pct", "MemoryUtilization[5m]{resourceId = \"%s\"}.mean()"),
                           # Network bytes are cumulative counters since boot: last hour = last - first reading.

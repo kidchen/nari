@@ -19,10 +19,10 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Callable
 
-from app.modules.realestate import Listing
+from app.features.realestate.listings import Listing
 
 log = logging.getLogger(__name__)
 

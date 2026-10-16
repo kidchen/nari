@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from app.modules.rotating import QuarterInfo
+from app.features.cards.rotating import QuarterInfo
 
 
 def quarter_key(d: date) -> str:

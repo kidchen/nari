@@ -3,6 +3,7 @@
 Retention (nightly):
   processed_emails   180 days   — must exceed the longest Gmail look-back, or old mail would be re-processed
   listings           180 days since last seen
+  biorxiv_history    90 days    — DOIs already sent, per person
   re_events          30 days    — real-estate alerts, delivered per person (deliveries table follows)
   quarter state      keep previous, current and next quarter (5% categories, /setcats, activations)
   err_alert / llm    30 days
@@ -16,7 +17,7 @@ import logging
 import re
 import sqlite3
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ log = logging.getLogger(__name__)
 EMAIL_RETENTION_DAYS = 180
 LISTING_RETENTION_DAYS = 180
 SHORT_RETENTION_DAYS = 30
+BIORXIV_RETENTION_DAYS = 90    # sent-paper DOIs; far beyond the 7-day look-back, so nothing is re-sent
 QUARTER_KEY_RE = re.compile(r"^(rotq|rotating|activated|rotact):(?:[^:]+:)+(\d{4})Q([1-4])$")
 
 
@@ -61,13 +63,14 @@ def prune(db: DB, today: date | None = None, now: float | None = None) -> dict[s
     """Apply retention. Returns rows deleted per category."""
     today = today or date.today()
     now = now if now is not None else time.time()
-    iso = lambda days: (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()  # noqa: E731
+    iso = lambda days: (datetime.now(UTC) - timedelta(days=days)).isoformat()  # noqa: E731
     cur_q = _quarter_index(today.year, (today.month - 1) // 3 + 1)
     out: dict[str, int] = {}
     with db.tx() as c:
         out["emails"] = c.execute("DELETE FROM processed_emails WHERE processed < ?",
                                   (iso(EMAIL_RETENTION_DAYS),)).rowcount
         out["listings"] = c.execute("DELETE FROM listings WHERE last_seen < ?", (iso(LISTING_RETENTION_DAYS),)).rowcount
+        out["biorxiv"] = c.execute("DELETE FROM biorxiv_history WHERE sent < ?", (iso(BIORXIV_RETENTION_DAYS),)).rowcount
         out["re_events"] = c.execute("DELETE FROM re_events WHERE created < ?", (iso(SHORT_RETENTION_DAYS),)).rowcount
         out["deliveries"] = c.execute("DELETE FROM deliveries WHERE event_id NOT IN (SELECT id FROM re_events)").rowcount
         stale_quarters = []

@@ -11,7 +11,7 @@ import json
 import logging
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 TRANSIENT = {408, 429, 500, 503, 504}

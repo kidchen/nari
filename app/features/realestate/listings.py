@@ -9,8 +9,9 @@ from __future__ import annotations
 import html
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from app.db import DB
 

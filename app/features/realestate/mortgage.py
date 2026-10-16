@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series}"
 LABELS = {"MORTGAGE30US": "30-yr fixed", "MORTGAGE15US": "15-yr fixed"}

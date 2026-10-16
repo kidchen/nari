@@ -69,16 +69,20 @@ fi
 if [ "$SKIP_TESTS" -eq 1 ]; then
   warn "skipping tests (--skip-tests)"
 elif [ -x .venv/bin/python ] && .venv/bin/python -c "import pytest" 2>/dev/null; then
+  if [ -x .venv/bin/ruff ]; then
+    .venv/bin/ruff check . >"$WORK/ruff.log" 2>&1 || { cat "$WORK/ruff.log"; die "lint failed — fix it or use --skip-tests"; }
+    ok "lint clean"
+  fi
   .venv/bin/python -m pytest -q tests >"$WORK/pytest.log" 2>&1 || { tail -30 "$WORK/pytest.log"; die "tests failed — fix them or use --skip-tests"; }
   ok "tests passed ($(tail -1 "$WORK/pytest.log"))"
 else
-  warn "no .venv with pytest found; skipping tests (create one: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pytest)"
+  warn "no .venv with pytest found; skipping tests (create one: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt)"
 fi
 
 EXCLUDES=(
   --exclude=.venv --exclude=.git --exclude=.env --exclude=.claude --exclude=.idea --exclude=.vscode
   --exclude=__pycache__ --exclude='*.pyc' --exclude=.pytest_cache --exclude=.DS_Store
-  --exclude=./data --exclude=./backups --exclude=./tests --exclude=./samples --exclude='*.log' --exclude='*.tar.gz'
+  --exclude=./data --exclude=./backups --exclude=./tests --exclude=./samples --exclude=./.github --exclude=./scripts --exclude=.privacy-patterns --exclude=./requirements-dev.txt --exclude=./pyproject.toml --exclude=.ruff_cache --exclude='*.log' --exclude='*.tar.gz'
   --exclude=./deploy.sh --exclude=.deploy.env --exclude='.env.*' --exclude=./spec.md
 )
 TAR_FLAGS=()

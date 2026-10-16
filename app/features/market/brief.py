@@ -13,9 +13,10 @@ import logging
 import re
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
@@ -261,7 +262,7 @@ SPECIFIC_TYPES = {"earnings", "guidance", "product", "sales_data", "deal", "ipo"
 BARE_DATE_RE = re.compile(r"^(on )?([A-Z][a-z]{2,8}\.? \d{1,2}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2})$")
 
 
-def name_terms(f: "TickerFacts", aliases: dict[str, list[str]] | None = None) -> list[str]:
+def name_terms(f: TickerFacts, aliases: dict[str, list[str]] | None = None) -> list[str]:
     """Lower-case words that identify the company in a headline: symbol, distinctive name words, aliases."""
     words = [w for w in re.findall(r"[A-Za-z][A-Za-z&'\-]+", short_name(f.name)) if len(w) >= 4]
     return [t.lower() for t in [f.symbol, *words[:2], *((aliases or {}).get(f.symbol, []))]]
@@ -272,7 +273,7 @@ def mentions(headline: str, terms: list[str]) -> bool:
     return any(re.search(rf"(?<![a-z]){re.escape(t)}", h) for t in terms)
 
 
-def keep_item(it: dict, f: "TickerFacts | None" = None, by_id: dict | None = None,
+def keep_item(it: dict, f: TickerFacts | None = None, by_id: dict | None = None,
               aliases: dict[str, list[str]] | None = None) -> bool:
     """Drop 'moved with the market' items and items whose cited headlines aren't about this company
     (the model is told both rules; lite models don't always follow them)."""
@@ -285,7 +286,7 @@ def keep_item(it: dict, f: "TickerFacts | None" = None, by_id: dict | None = Non
     return any(mentions(t, terms) for t in cited)
 
 
-def fix_watch(watch: str, f: "TickerFacts | None") -> str:
+def fix_watch(watch: str, f: TickerFacts | None) -> str:
     w = watch.strip()
     if BARE_DATE_RE.match(w):
         return f"Earnings {w}" if f and f.earnings else ""
@@ -555,8 +556,9 @@ class Event:
 def fetch_economic_events(days: int, pattern: re.Pattern = KEY_US_EVENTS) -> list[Event]:
     """Key US releases for the next `days` days. Yahoo returns <=100 rows per query counted from the
     END of the window, so we query one day at a time and page through busy days."""
-    import yfinance as yf
     from datetime import timedelta
+
+    import yfinance as yf
 
     out, start = [], date.today()
     for d in range(1, days + 1):
@@ -590,8 +592,9 @@ def fetch_economic_events(days: int, pattern: re.Pattern = KEY_US_EVENTS) -> lis
 
 def fetch_earnings_timing(symbols: list[str], days: int) -> dict[str, str]:
     """symbol -> 'before open' / 'after close' where Yahoo's earnings calendar knows it."""
-    import yfinance as yf
     from datetime import timedelta
+
+    import yfinance as yf
 
     timing = {"BMO": "before open", "AMC": "after close"}
     try:
@@ -605,8 +608,9 @@ def fetch_earnings_timing(symbols: list[str], days: int) -> dict[str, str]:
 
 
 def fetch_ipos(days: int, limit: int = 6) -> list[Event]:
-    import yfinance as yf
     from datetime import timedelta
+
+    import yfinance as yf
 
     try:
         df = yf.Calendars(start=date.today(), end=date.today() + timedelta(days=days)).get_ipo_info_calendar(limit=100)

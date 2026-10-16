@@ -42,7 +42,7 @@ class Session:
         self.imap: imaplib.IMAP4_SSL | None = None
         self.stats = {"searches": 0, "headers": 0, "bodies": 0}
 
-    def __enter__(self) -> "Session":
+    def __enter__(self) -> Session:
         self.imap = imaplib.IMAP4_SSL(GMAIL_IMAP)
         self.imap.login(self.address, self.app_password)
         return self
