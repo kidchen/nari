@@ -7,7 +7,7 @@ A Telegram bot for a household, run as one Docker container on a small VM. It se
 | `market` | **Morning brief:** what's moving your portfolio and watchlist today, and why, with sources. **Evening brief:** the close, what moved, and a 2-week look-ahead (key US data ⭐, your earnings, IPOs) | Mon–Fri 08:30 and 16:30 PT; holidays skipped |
 | `realestate` | Redfin saved-search alerts as photo messages linked to the real listing (new, price change, back on market); sold and suggested homes in one summary; weekly mortgage rates | Gmail checked every 2h, 7am–9pm, silent if nothing new; rates Thu 18:00 |
 | `cards` | This quarter's 5% categories for your rotating cards, activation status, next quarter's preview, and reminders | Read from your forwarded bank emails; plan on the 1st of each quarter; reminder on the 15th if not activated |
-| `biorxiv` | New bioRxiv preprints matching your keywords and context terms, each summarized in 3 bullets (goal, method, finding) | Your own cron, e.g. Mon–Fri 08:00 |
+| `biorxiv` | New bioRxiv preprints matching your keywords and context terms, each summarized in 3 bullets (goal, method, finding). After 7 quiet days, a recap of the past 14 days: papers sent plus near misses (a keyword but no context term), or "nothing matched" | Your own cron, e.g. Mon–Fri 08:00 |
 | `placeholder` *(admin)* | Monthly parking placeholder image (watermarked, not a receipt) | 1st of the month, 08:00 |
 | `vmhealth` *(admin)* | `/health` on demand; alarms when disk, memory, load, backups or the OCI instance cross a threshold | Checked every 10 min |
 

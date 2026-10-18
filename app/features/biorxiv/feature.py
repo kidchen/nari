@@ -5,7 +5,7 @@ import asyncio
 import html
 import json
 import logging
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from app import monitoring
 from app.features.biorxiv import biorxiv
@@ -39,8 +39,8 @@ def profiles(s) -> list[str]:
 
 # ---- digest --------------------------------------------------------------------------------
 
-def build(s, pid: str) -> tuple[str | None, list[str], date]:
-    """Blocking. Returns (message or None if nothing new, DOIs in it, end date)."""
+def build(s, pid: str) -> tuple[str | None, list[biorxiv.Paper], date]:
+    """Blocking. Returns (message or None if nothing new, papers in it, end date)."""
     conf = s.cfg.profiles[pid]["biorxiv"]
     today = s.today()
     last = s.db.get_kv(f"biorxiv:last:{pid}")
@@ -54,7 +54,47 @@ def build(s, pid: str) -> tuple[str | None, list[str], date]:
     top, extra = picked[:cap], picked[cap:cap + 20]
     llm_fn = (lambda p: s.llm("brief_models", p, json_output=True, retries=True)) if s.cfg.gemini_api_key else None
     summaries = biorxiv.summarize(top, llm_fn)
-    return biorxiv.format_digest(top, summaries, extra, start, today), [p.doi for p in top + extra], today
+    return biorxiv.format_digest(top, summaries, extra, start, today), top + extra, today
+
+
+# ---- recap after a quiet week --------------------------------------------------------------
+
+def _recap_conf(s, pid: str) -> tuple[int, int]:
+    conf = s.cfg.profiles[pid]["biorxiv"]
+    return int(conf.get("recap_after_days", 7)), int(conf.get("recap_window_days", 14))
+
+
+def recap_due(s, pid: str, now: datetime | None = None) -> bool:
+    """Nothing sent to this person (digest or recap) for `recap_after_days`. 0 turns recaps off."""
+    quiet, _ = _recap_conf(s, pid)
+    if quiet <= 0:
+        return False
+    now = now or datetime.now(UTC)
+    last = s.db.get_kv(f"biorxiv:last_msg:{pid}") or s.db.biorxiv_last_sent(pid) or s.db.registered_at(pid)
+    return bool(last) and now - datetime.fromisoformat(last) >= timedelta(days=quiet)
+
+
+def build_recap(s, pid: str) -> str:
+    """Blocking (refetches the window from the API). Titles + links only, no AI summaries."""
+    quiet, days = _recap_conf(s, pid)
+    conf = s.cfg.profiles[pid]["biorxiv"]
+    today = s.today()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    kw, ctx = terms(s, pid), terms(s, pid, "context")
+    papers = biorxiv.fetch_papers(today - timedelta(days=days), today, conf.get("categories") or [],
+                                  conf.get("include_revisions", False))
+    by_doi = {p.doi: p for p in papers}
+    sent = []
+    for r in s.db.biorxiv_sent_since(pid, since):
+        p = by_doi.get(r["doi"])        # rows from before titles were stored: fill in from the refetch
+        title, url = r["title"] or (p.title if p else r["doi"]), r["url"] or (p.url if p else "")
+        sent.append((title, url))
+    already = s.db.biorxiv_sent(pid)
+    near = [(p, hits) for p in papers if ctx and p.doi not in already
+            and (hits := biorxiv.match_keywords(p, kw)) and not biorxiv.match_keywords(p, ctx)]
+    near.sort(key=lambda ph: ph[0].posted, reverse=True)
+    log.info("bioRxiv recap %s: %d papers, %d sent, %d near misses", pid, len(papers), len(sent), len(near))
+    return biorxiv.format_recap(sent, near[:15], days, quiet, kw, ctx)
 
 
 async def run(s, force: bool = False, pid: str | None = None) -> None:
@@ -65,14 +105,19 @@ async def run(s, force: bool = False, pid: str | None = None) -> None:
         if not s.db.chat_ids_for([p]):
             continue                                     # not registered yet: papers wait for them
         try:
-            text, dois, end = await asyncio.to_thread(build, s, p)
-            monitoring.note(f"{p}: {len(dois)} paper(s)")
+            text, papers, end = await asyncio.to_thread(build, s, p)
+            monitoring.note(f"{p}: {len(papers)} paper(s)")
             if text:
                 if not await s.n.send_text([p], text):
                     continue                             # nothing delivered: keep them for next time
-                s.db.mark_biorxiv_sent(p, dois)          # only after it went out
+                s.db.mark_biorxiv_sent(p, [(x.doi, x.title, x.url) for x in papers])   # only after it went out
+                s.db.set_kv(f"biorxiv:last_msg:{p}", datetime.now(UTC).isoformat())
             elif force:
                 await s.n.send_text([p], "📚 No new matching bioRxiv papers.")
+            elif recap_due(s, p):                        # a quiet week: show it still works + near misses
+                if await s.n.send_text([p], await asyncio.to_thread(build_recap, s, p)):
+                    s.db.set_kv(f"biorxiv:last_msg:{p}", datetime.now(UTC).isoformat())
+                    monitoring.note(f"{p}: quiet-week recap")
             s.db.set_kv(f"biorxiv:last:{p}", end.isoformat())
         except Exception as e:  # noqa: BLE001
             await s.report_error(f"biorxiv for {p}", e)

@@ -210,3 +210,26 @@ def format_digest(papers: list[Paper], summaries: dict[str, list[str]], extra: l
     if papers and not summaries:
         lines += ["", "<i>(AI summaries unavailable; showing the start of each abstract.)</i>"]
     return "\n".join(lines)
+
+
+def format_recap(sent: list[tuple[str, str]], near: list[tuple[Paper, list[str]]], days: int, quiet_days: int,
+                 keywords: list[str], context: list[str]) -> str:
+    """After a quiet week: what was sent in the window (title, url) + near misses (matched a keyword but
+    no context term), or a plain 'nothing matched' so the person knows the digest still works."""
+    if not sent and not near:
+        lines = [f"📚 <b>bioRxiv</b>: nothing matched your topics in the past {days} days.",
+                 "<i>Keywords:</i> " + _esc(", ".join(label(k) for k in keywords))]
+        if context:
+            lines.append("<i>Must also mention:</i> " + _esc(", ".join(label(k) for k in context)))
+        lines.append("<i>Widen it with /papers add &lt;term&gt;.</i>")
+        return "\n".join(lines)
+    lines = [f"📚 <b>bioRxiv recap</b> · past {days} days",
+             f"<i>Nothing new matched in {quiet_days} days, so here's the recent picture.</i>"]
+    if sent:
+        lines += ["", f"<b>Sent to you ({len(sent)})</b>"]
+        lines += [f'• <a href="{html.escape(url)}">{_esc(title)}</a>' if url else f"• {_esc(title)}" for title, url in sent]
+    if near:
+        lines += ["", f"<b>Near misses ({len(near)})</b> <i>— matched a keyword, but none of: "
+                  f"{_esc(', '.join(label(k) for k in context))}</i>"]
+        lines += [f'• <a href="{html.escape(p.url)}">{_esc(p.title)}</a> <i>({_esc(", ".join(hits))})</i>' for p, hits in near]
+    return "\n".join(lines)

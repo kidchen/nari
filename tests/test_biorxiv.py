@@ -124,3 +124,56 @@ def test_biorxiv_context_terms_required():
           _paper("10.1/abs", "Gut regeneration", "We study regenerating fins after injury")]  # context in abstract (+s)
     assert [p.doi for p in bx.select(ps, kws, set(), ctx)] == ["10.1/in", "10.1/abs"]
     assert {p.doi for p in bx.select(ps, kws, set())} == {"10.1/in", "10.1/out", "10.1/abs"}   # no context: as before
+
+
+def test_biorxiv_quiet_week_recap(monkeypatch):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    from app.features.biorxiv import biorxiv as bx
+    from app.features.biorxiv import feature as bxf
+    from app.services import Services
+    db = DB(":memory:")
+    sent_paper = _paper("10.1/sent", "Cortex wiring in zebrafish", "cortex of danio")
+    near = _paper("10.1/near", "Neurogenesis in flies", "neurogenic fasting")       # keyword, no context
+    papers = [sent_paper, near, _paper("10.1/off", "Unrelated kidney paper")]
+    monkeypatch.setattr(bx, "fetch_papers", lambda *a, **k: papers)
+    cfg = SimpleNamespace(settings={}, cards={}, gemini_api_key="", primary_profile="admin", tz=brief.ZoneInfo("America/Los_Angeles"),
+                          profiles={"admin": {"primary": True},
+                                    "b": {"features": ["biorxiv"], "biorxiv": {"keywords": ["cortex", "neurogenesis|neurogenic"],
+                                                                                "context": ["zebrafish|danio"]}}})
+    n = _RecNotifier(db)
+    j = Services(cfg, db, n)
+    db.register_user(2, "b", "B")
+    with db.tx() as c:                     # a paper sent 8 days ago, stored before titles were kept
+        c.execute("INSERT INTO biorxiv_history(profile, doi, sent) VALUES ('b', '10.1/sent', ?)",
+                  ((datetime.now(UTC) - timedelta(days=8)).isoformat(),))
+    assert bxf.recap_due(j, "b")
+    text = bxf.build_recap(j, "b")
+    assert "📚 <b>bioRxiv recap</b> · past 14 days" in text and "Sent to you (1)" in text
+    assert 'href="https://www.biorxiv.org/content/10.1/sentv1">Cortex wiring in zebrafish' in text   # title filled in
+    assert "Near misses (1)" in text and "Neurogenesis in flies" in text and "kidney" not in text
+    asyncio.run(bxf.run(j))                # nothing new (sent one is deduped, near miss lacks context) -> recap
+    assert [t for _, t in n.sent] == ["📚 <b>bioRxiv recap</b> · past 14 days"]
+    asyncio.run(bxf.run(j))                # next day: no second recap
+    assert len(n.sent) == 1 and not bxf.recap_due(j, "b")
+    assert bxf.recap_due(j, "b", now=datetime.now(UTC) + timedelta(days=7))
+
+
+def test_biorxiv_recap_when_nothing_matched():
+    from app.features.biorxiv import biorxiv as bx
+    text = bx.format_recap([], [], 14, 7, ["cortex|cortical"], ["zebrafish|danio"])
+    assert "nothing matched your topics in the past 14 days" in text and "Keywords:</i> cortex" in text
+    assert "Must also mention:</i> zebrafish" in text and "/papers add" in text
+
+
+def test_biorxiv_history_gets_title_columns_on_old_databases(tmp_path):
+    import sqlite3
+    p = tmp_path / "old.db"
+    with sqlite3.connect(p) as c:
+        c.execute("CREATE TABLE biorxiv_history (profile TEXT NOT NULL, doi TEXT NOT NULL, sent TEXT NOT NULL, PRIMARY KEY (profile, doi))")
+        c.execute("INSERT INTO biorxiv_history VALUES ('b', '10.1/x', '2026-10-01')")
+    db = DB(p)
+    db.mark_biorxiv_sent("b", [("10.1/y", "T", "https://u")])
+    assert [tuple(r) for r in db.biorxiv_sent_since("b", "2000")][-1] == ("10.1/x", "2026-10-01", "", "")

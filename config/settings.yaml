@@ -18,13 +18,15 @@ profiles:
     # email_from: [me@example.com]   # forwarded 5% emails from this address are this person's
     # placeholder: {label: Monthly parking, amount: "$100.00"}
     # real_estate: {zips: ["94110"], max_price: 1500000, searches: [my search]}   # narrow your own alerts
-    # biorxiv:                       # new bioRxiv preprints on your topics, summarized in Chinese (feature: biorxiv)
+    # biorxiv:                       # new bioRxiv preprints on your topics, summarized (feature: biorxiv)
     #   categories: [cell biology, neuroscience]     # bioRxiv subject names; empty = all
     #   keywords: [single-cell, CRISPR]              # title/abstract, case-insensitive; order = ranking priority
     #   schedule: "0 8 * * 1-5"                      # cron string or {day_of_week: mon-fri, hour: 8}
     #   context: [cortex|cortical]                  # optional: a paper must ALSO mention one of these
     #   max_papers: 12
     #   include_revisions: false
+    #   recap_after_days: 7            # nothing sent this long -> a recap (sent papers + near misses); 0 = off
+    #   recap_window_days: 14
   partner:
     name: Partner
     features: [realestate]

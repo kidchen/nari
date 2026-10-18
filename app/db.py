@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS biorxiv_history (
     profile     TEXT NOT NULL,
     doi         TEXT NOT NULL,
     sent        TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',   -- for the recap after a quiet week
+    url         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (profile, doi)
 );
 CREATE TABLE IF NOT EXISTS job_runs (
@@ -77,6 +79,15 @@ class DB:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a table was created (CREATE TABLE IF NOT EXISTS won't)."""
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(biorxiv_history)")}
+        with self.tx() as c:
+            for col in ("title", "url"):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE biorxiv_history ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -195,11 +206,19 @@ class DB:
     def biorxiv_sent(self, profile: str) -> set[str]:
         return {r[0] for r in self._conn.execute("SELECT doi FROM biorxiv_history WHERE profile=?", (profile,))}
 
-    def mark_biorxiv_sent(self, profile: str, dois: list[str]) -> None:
+    def mark_biorxiv_sent(self, profile: str, papers: list[tuple[str, str, str]]) -> None:
+        """papers: (doi, title, url)."""
         now = datetime.now(UTC).isoformat()
         with self.tx() as c:
-            c.executemany("INSERT OR IGNORE INTO biorxiv_history(profile, doi, sent) VALUES (?,?,?)",
-                          [(profile, d, now) for d in dois])
+            c.executemany("INSERT OR IGNORE INTO biorxiv_history(profile, doi, sent, title, url) VALUES (?,?,?,?,?)",
+                          [(profile, d, now, title, url) for d, title, url in papers])
+
+    def biorxiv_sent_since(self, profile: str, since_iso: str) -> list[sqlite3.Row]:
+        return self._conn.execute("SELECT doi, sent, title, url FROM biorxiv_history WHERE profile=? AND sent >= ? "
+                                  "ORDER BY sent DESC", (profile, since_iso)).fetchall()
+
+    def biorxiv_last_sent(self, profile: str) -> str | None:
+        return self._conn.execute("SELECT max(sent) FROM biorxiv_history WHERE profile=?", (profile,)).fetchone()[0]
 
     # ---- job run ledger (app/monitoring.py) -------------------------------------------------
     def run_started(self, job: str, ts: float, manual: bool) -> int:
