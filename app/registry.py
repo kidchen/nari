@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.integrations.gmail import Mail
     from app.main import BotApp
+    from app.monitoring import Alarm
     from app.services import Services
 
 Handler = Callable[["BotApp", Any, Any], Awaitable[None]]          # (bot, update, ctx)
@@ -66,4 +67,5 @@ class Feature:
     ready: Callable[[Services, str], bool] = lambda services, pid: True  # set up for this person?
     on_startup: Callable[[Services], None] | None = None
     status_section: Callable[[Services, str], Awaitable[list[str]]] | None = None   # lines for admin /status
+    alarms: Callable[[Services], Awaitable[list[Alarm]]] | None = None   # checked every 10 min (app/monitoring.py)
     extra: dict[str, Any] = field(default_factory=dict)

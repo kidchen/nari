@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
+from app import monitoring
 from app.features.realestate import listings as realestate
 from app.features.realestate import mortgage, redfin_email
 from app.registry import Feature, Job, MailQuery
@@ -60,6 +61,7 @@ async def handle_mail(s, mails, force: bool = False) -> None:
             note = f"{len(mails)} Redfin email(s), nothing new" if mails else "No new Redfin emails"
             await s.n.send_text(s.access.recipients("realestate"), f"🏡 {note} since the last check.")
         log.info("Real estate: %d emails, %d new events, %d deliveries", len(mails), new_events, delivered)
+        monitoring.note(f"realestate: {len(mails)} email(s) → {new_events} new event(s), {delivered} delivered")
     except Exception as e:  # noqa: BLE001
         await s.report_error("realestate", e)
 

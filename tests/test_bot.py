@@ -42,7 +42,7 @@ def test_command_menus_are_short_and_only_show_ready_features(tmp_path, monkeypa
     b, _ = _bot(tmp_path, monkeypatch)
     admin = [c for c, _, _ in b._commands_for("admin")]
     sci = [c for c, _, _ in b._commands_for("sci")]
-    assert admin == ["help", "features", "brief", "portfolio", "watch", "cards", "status", "run"]  # no biorxiv set up
+    assert admin == ["help", "features", "brief", "portfolio", "watch", "cards", "health", "status", "run"]  # no biorxiv
     assert sci == ["help", "features", "papers"]                                                   # no cards owned
     help_text = b._help("sci")
     assert "/papers — New bioRxiv papers" in help_text and "    /papers add zebrafish|danio" in help_text
@@ -105,3 +105,20 @@ def test_papers_context_commands(tmp_path, monkeypatch):
     _call(b, asyncio, _cmd(b, "papers"), 2, "/papers context del 1", out)
     assert bxf.terms(b.services, "sci", "context") == [] and "keywords alone decide" in out[-1][0]
     assert "Categories: neuroscience" in out[-1][0]
+
+
+
+def test_status_people_line_matches_menus(tmp_path, monkeypatch):
+    import asyncio
+
+    from helpers import _call
+    b, _ = _bot(tmp_path, monkeypatch)
+    b.services.features = [f for f in b.services.features if f.name != "vmhealth"]   # skip host metrics in tests
+    out = []
+    _call(b, asyncio, b.status, 1, "/status", out)
+    people = next(t for t, _ in out if "<b>People</b>" in t)
+    admin_line = next(l for l in people.splitlines() if l.startswith("• Admin"))
+    assert "biorxiv" in admin_line.split("allowed, not set up:")[1]      # allowed via "all", but no topics
+    assert "biorxiv" not in admin_line.split(" · ")[0]                   # ...so not listed as active
+    sci_line = next(l for l in people.splitlines() if l.startswith("• Sci"))
+    assert sci_line.split(": ", 1)[1] == "realestate, biorxiv"           # both set up, nothing idle

@@ -10,6 +10,7 @@ from datetime import datetime
 
 from telegram.constants import ParseMode
 
+from app import monitoring
 from app.features.market import brief
 from app.maintenance import TickerInfoCache
 from app.notify import split_message
@@ -64,6 +65,7 @@ async def run(s, force: bool = False, mode: str = "morning") -> None:
     try:
         if not force and await asyncio.to_thread(brief.last_trading_day) != datetime.now(brief.NY).date():
             log.info("No US trading session today; skipping brief")
+            monitoring.note("no US trading session today")
             return
         b = builder(s)                       # shared: each ticker/feed fetched once per run
         failed = []

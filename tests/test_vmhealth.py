@@ -8,36 +8,17 @@ from helpers import (
 from app.db import DB
 
 
-def test_health_alarms_fire_once_and_recover():
+def test_health_conditions_and_format():
     from app.features.vmhealth import vmhealth as vh
-    db = DB(":memory:")
-    now = 1_800_000_000.0
-    m = vh.Metrics(load15=0.3, cores=1, mem_total_mb=6000, mem_avail_mb=4000, disk_used_pct=40.0, newest_backup_age_d=1)
-    assert vh.transitions(db, vh.conditions(m, _thresholds(), now)) == []          # healthy: silent
-    m.disk_used_pct = 91.0
-    (key, firing, desc), = vh.transitions(db, vh.conditions(m, _thresholds(), now))
-    assert (key, firing) == ("disk", True) and "Disk 91% used" in desc
-    assert vh.transitions(db, vh.conditions(m, _thresholds(), now)) == []          # still firing: no repeat
-    m.disk_used_pct = 50.0
-    assert vh.transitions(db, vh.conditions(m, _thresholds(), now)) == [("disk", False, "Disk 50% used (alarm ≥ 85%)")]
-
-
-def test_health_job_failure_alarm_and_format():
-    from app.features.vmhealth import vmhealth as vh
-    db = DB(":memory:")
-    now = 1_800_000_000.0
-    for i in range(3):
-        vh.record_failure(db, "gmail", "IMAP login failed", now - 600 * i)
-    vh.record_failure(db, "market", "yahoo 500", now - 20 * 3600)               # old: outside the 6h window
-    m = vh.Metrics(cores=1, mem_total_mb=6000, mem_avail_mb=4000, disk_total_gb=30, disk_used_pct=40.0)
-    m.job_failures = {"gmail": [now - 600 * i for i in range(3)], "market": [now - 20 * 3600]}
-    m.last_errors = {"gmail": "IMAP login failed", "market": "yahoo 500"}
-    firing = {k for k, f, _ in vh.conditions(m, _thresholds(), now) if f}
-    assert firing == {"job:gmail"}
+    m = vh.Metrics(load15=0.3, cores=1, mem_total_mb=6000, mem_avail_mb=4000, disk_total_gb=30, disk_used_pct=40.0,
+                   newest_backup_age_d=1)
+    assert not [k for k, f, _ in vh.conditions(m, _thresholds()) if f]           # healthy
+    m.disk_used_pct, m.load15 = 91.0, 3.0
+    firing = {k: d for k, f, d in vh.conditions(m, _thresholds()) if f}
+    assert set(firing) == {"disk", "load"} and "Disk 91% used" in firing["disk"]
     m.oci = {"error": "not permitted — create the dynamic group + policy (README → VM health)"}
-    text = vh.format_health(m, _thresholds(), now)
-    assert "🟢 Disk 40% of 30 GB" in text and "🔴 gmail: 3×" in text and "🟢 market: 1×" in text
-    assert "OCI: not permitted" in text
+    text = vh.format_health(m, _thresholds())
+    assert "🔴 Disk 91% of 30 GB" in text and "OCI: not permitted" in text and "Job" not in text
 
 
 def test_vmhealth_is_admin_only():

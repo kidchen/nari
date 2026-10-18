@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS biorxiv_history (
     sent        TEXT NOT NULL,
     PRIMARY KEY (profile, doi)
 );
+CREATE TABLE IF NOT EXISTS job_runs (
+    id          INTEGER PRIMARY KEY,
+    job         TEXT NOT NULL,
+    started     REAL NOT NULL,         -- unix time
+    ended       REAL,                  -- NULL while running (or if the process died mid-run)
+    ok          INTEGER,
+    manual      INTEGER NOT NULL DEFAULT 0,
+    summary     TEXT NOT NULL DEFAULT '',   -- proof of work, e.g. "3 new emails · 2 message(s) sent"
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job, started);
 CREATE TABLE IF NOT EXISTS kv (
     k           TEXT PRIMARY KEY,
     v           TEXT NOT NULL
@@ -189,6 +200,25 @@ class DB:
         with self.tx() as c:
             c.executemany("INSERT OR IGNORE INTO biorxiv_history(profile, doi, sent) VALUES (?,?,?)",
                           [(profile, d, now) for d in dois])
+
+    # ---- job run ledger (app/monitoring.py) -------------------------------------------------
+    def run_started(self, job: str, ts: float, manual: bool) -> int:
+        with self.tx() as c:
+            return c.execute("INSERT INTO job_runs(job, started, manual) VALUES (?,?,?)", (job, ts, int(manual))).lastrowid
+
+    def run_finished(self, row: int, ts: float, ok: bool, summary: str, error: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE job_runs SET ended=?, ok=?, summary=?, error=? WHERE id=?", (ts, int(ok), summary, error, row))
+
+    def recent_runs(self, job: str, limit: int = 20) -> list[sqlite3.Row]:
+        return self._conn.execute("SELECT * FROM job_runs WHERE job=? ORDER BY started DESC, id DESC LIMIT ?",
+                                  (job, limit)).fetchall()
+
+    def last_starts(self) -> dict[str, float]:
+        return {r[0]: r[1] for r in self._conn.execute("SELECT job, max(started) FROM job_runs GROUP BY job")}
+
+    def run_jobs(self) -> list[str]:
+        return [r[0] for r in self._conn.execute("SELECT DISTINCT job FROM job_runs ORDER BY job")]
 
     def kv_like(self, pattern: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self._conn.execute("SELECT k, v FROM kv WHERE k LIKE ?", (pattern,))]

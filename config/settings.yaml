@@ -130,11 +130,18 @@ maintenance:
   backup_schedule: {day_of_week: sun, hour: 3, minute: 30}    # weekly SQLite backup into the nari-backups volume
   backup_keep: 8
 
-# VM health (admin only): alarms once when a threshold is crossed and once on recovery; /health on demand.
+# Monitoring (app/monitoring.py): every job run is recorded; the primary profile gets a message when an
+# alarm fires or recovers (any hour) and a daily reminder while one keeps firing. /status shows it all.
+monitoring:
+  schedule: {minute: "*/10"}    # alarm evaluation: missed runs, job failures, feature alarms (VM health)
+  missed_grace_minutes: 30      # a scheduled run that hasn't started this long after its time = missed
+  job_failures_critical: 3      # a failing job is 🟡; this many failed runs in a row makes it 🔴
+  reminder_hours: 24
+
+# VM health (admin only): /health on demand; alarms (via monitoring) when a threshold is crossed.
 # The host watchdog (deploy/watchdog.sh, installed by deploy.sh) alarms when the bot container itself is down.
 vm_health:
   enabled: true
-  schedule: {minute: "*/10"}
   oci: true                     # instance-principal OCI metrics; needs the dynamic group + policy (README)
   thresholds:
     disk_pct: 85
@@ -143,5 +150,3 @@ vm_health:
     swap_pct: 50
     restarts_24h: 3
     backup_max_age_days: 9      # weekly backups + 2 days slack
-    job_failures: 3             # same job failing this many times ...
-    job_failures_hours: 6       # ... within this many hours

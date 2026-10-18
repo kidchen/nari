@@ -8,6 +8,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
 from app.db import DB
+from app.monitoring import count_sent
 
 log = logging.getLogger(__name__)
 TELEGRAM_LIMIT = 4096
@@ -52,6 +53,7 @@ class Notifier:
             sent += 1
         if not sent:
             log.warning("No registered chats for profiles %s; message dropped", profiles)
+        count_sent(sent)
         return sent
 
     async def send_photo(self, profiles: list[str], data: bytes, caption_html: str) -> int:
@@ -59,6 +61,7 @@ class Notifier:
         for chat_id in self.db.chat_ids_for(profiles):
             await self.bot.send_photo(chat_id, io.BytesIO(data), caption=caption_html, parse_mode=ParseMode.HTML)
             sent += 1
+        count_sent(sent)
         return sent
 
     async def send_document(self, profiles: list[str], data: bytes, filename: str, caption: str) -> int:
@@ -68,4 +71,5 @@ class Notifier:
             sent += 1
         if not sent:
             log.warning("No registered chats for profiles %s; document dropped", profiles)
+        count_sent(sent)
         return sent

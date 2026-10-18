@@ -14,21 +14,20 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from app import maintenance
+from app import maintenance, monitoring
 from app.access import Access
 from app.config import Config
 from app.db import DB
-from app.features.vmhealth.vmhealth import record_failure
 from app.integrations import gmail, llm
 from app.notify import Notifier
-from app.registry import Feature, JobFn
+from app.registry import Feature, JobFn, Schedule
 
 log = logging.getLogger(__name__)
 BACKUP_DIR = Path(os.environ.get("NARI_BACKUP_DIR", "/app/backups"))
 
 
 class Services:
-    ERROR_ALERT_EVERY = 6 * 3600  # frequent jobs (2-hourly polls) must not page you every run
+    ERROR_ALERT_EVERY = 6 * 3600  # errors outside a job run (commands): at most one message per 6h
 
     def __init__(self, cfg: Config, db: DB, notifier: Notifier | None, features: list[Feature] | None = None):
         from app.features import ALL
@@ -55,7 +54,8 @@ class Services:
 
     async def report_error(self, job: str, e: Exception) -> None:
         log.exception("Job %s failed", job)
-        record_failure(self.db, job, str(e))   # feeds /status and the repeated-failure alarm
+        if monitoring.record_error(job, str(e)):
+            return              # inside a job run: the run is marked failed and the job alarm reports it
         key = f"err_alert:{job}"
         last = float(self.db.get_kv(key) or 0)
         if time.time() - last < self.ERROR_ALERT_EVERY:
@@ -102,12 +102,14 @@ class Services:
         """Scheduled Gmail check (every 2 hours). `only` limits it to some features (used by /run)."""
         feats = self.mail_features(only)
         if not feats:
+            monitoring.note("no mail features enabled")
             return
         try:
             mails = await asyncio.to_thread(self.read_mail, feats)
         except Exception as e:  # noqa: BLE001
             await self.report_error("gmail", e)
             return
+        monitoring.note("new mail: " + ", ".join(f"{f.name} {len(mails.get(f.name, []))}" for f in feats))
         for f in feats:
             await f.mail.handle(self, mails.get(f.name, []), force)
 
@@ -120,6 +122,7 @@ class Services:
             if self.today().weekday() == 6 or force:
                 await asyncio.to_thread(maintenance.vacuum, self.db)
             log.info("Cleanup: pruned %s, fixed %s", pruned, fixed)
+            monitoring.note(f"pruned {sum(pruned.values())} row(s)")
             if force:
                 await self.n.send_text([self.cfg.primary_profile], f"🧹 Cleanup: pruned {pruned}; leftovers {fixed}")
         except Exception as e:  # noqa: BLE001
@@ -130,29 +133,53 @@ class Services:
             keep = self.cfg.settings.get("maintenance", {}).get("backup_keep", 8)
             path = await asyncio.to_thread(maintenance.backup, self.db, BACKUP_DIR, keep)
             log.info("Backup written: %s", path)
+            monitoring.note(f"{path.name}, {path.stat().st_size / 1e6:.1f} MB")
             if force:
                 await self.n.send_text([self.cfg.primary_profile], f"💾 Backup written: {path.name}")
         except Exception as e:  # noqa: BLE001
             await self.report_error("backup", e)
 
     # ---- job registry -----------------------------------------------------------------------
-    def core_jobs(self) -> dict[str, tuple[JobFn, dict | str | None]]:
+    def core_jobs(self) -> dict[str, tuple[JobFn, Schedule]]:
         mt = self.cfg.settings.get("maintenance", {})
         mail_sched = self.cfg.settings.get("gmail", {}).get("schedule") or \
             self.cfg.settings.get("real_estate", {}).get("alerts_schedule")
-        return {"mail": (lambda s, force=False: s.mail_check(force), mail_sched),
-                "cleanup": (lambda s, force=False: s.cleanup(force), mt.get("cleanup_schedule", {"hour": 3, "minute": 0})),
-                "backup": (lambda s, force=False: s.backup(force),
-                           mt.get("backup_schedule", {"day_of_week": "sun", "hour": 3, "minute": 30}))}
+        # Must be `async def` functions: APScheduler only awaits coroutine functions. A lambda returning a
+        # coroutine "runs" in 1 ms and the coroutine is silently dropped (that bug skipped Gmail checks).
+        return {"mail": (_run_mail, mail_sched),
+                "cleanup": (_run_cleanup, mt.get("cleanup_schedule", {"hour": 3, "minute": 0})),
+                "backup": (_run_backup, mt.get("backup_schedule", {"day_of_week": "sun", "hour": 3, "minute": 30})),
+                "alarms": (monitoring.evaluate, self.cfg.settings.get("monitoring", {}).get("schedule", {"minute": "*/10"}))}
 
-    def jobs(self) -> dict[str, tuple[JobFn, dict | str | None]]:
-        """Every /run-able job: {id: (fn(services, force=...), schedule or None)}."""
-        out = self.core_jobs()
+    def jobs(self) -> dict[str, tuple[JobFn, Schedule]]:
+        """Every /run-able job: {id: (fn(services, force=...), schedule or None)}, each recorded in the run ledger."""
+        raw = self.core_jobs()
         for f in self.features:
             for j in f.jobs:
-                out[j.id] = (j.run, j.schedule(self.cfg.settings))
+                raw[j.id] = (j.run, j.schedule(self.cfg.settings))
+        return {job_id: (monitoring.monitored(job_id, fn), spec) for job_id, (fn, spec) in raw.items()}
+
+    def scheduled_jobs(self) -> list[tuple[str, JobFn, dict, Schedule]]:
+        """What the scheduler runs (and the missed-run alarm checks): (id, fn, kwargs, schedule)."""
+        out = [(job_id, fn, {}, spec) for job_id, (fn, spec) in self.jobs().items() if spec]
+        for f in self.features:
+            for job_id, fn, kwargs, spec in (f.profile_jobs(self) if f.profile_jobs else []):
+                if spec:
+                    out.append((job_id, monitoring.monitored(job_id, fn), kwargs, spec))
         return out
 
     async def run_job(self, job_id: str, force: bool = True) -> None:
         fn, _ = self.jobs()[job_id]
         await fn(self, force=force)
+
+
+async def _run_mail(s: Services, force: bool = False) -> None:
+    await s.mail_check(force)
+
+
+async def _run_cleanup(s: Services, force: bool = False) -> None:
+    await s.cleanup(force)
+
+
+async def _run_backup(s: Services, force: bool = False) -> None:
+    await s.backup(force)

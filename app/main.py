@@ -1,8 +1,8 @@
 """Entry point: Telegram bot (long polling) + APScheduler cron jobs on the same event loop.
 
-Feature-agnostic: commands, callbacks, aliases, schedules, /help, menus and /status sections all come
-from the feature registry (app/features/__init__.py). Only registration, /features, /status and /run
-live here.
+Feature-agnostic: commands, callbacks, aliases, schedules, /help, menus, alarms and /status sections all
+come from the feature registry (app/features/__init__.py). Only registration, /features, /status and /run
+live here; job runs and alarms are in app/monitoring.py.
 """
 from __future__ import annotations
 
@@ -15,18 +15,17 @@ from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
-from app import maintenance
+from app import maintenance, monitoring
 from app.access import catalog
 from app.config import Config, load_config
 from app.db import DB
 from app.features.vmhealth.vmhealth import record_start
-from app.notify import Notifier
+from app.notify import Notifier, split_message
 from app.registry import Feature
 from app.services import Services
 
@@ -37,7 +36,7 @@ HEARTBEAT_FILE = Path(os.environ.get("NARI_HEARTBEAT_FILE", "/tmp/nari-heartbeat
 
 # Core commands: (name, description, usage). Feature commands come from the registry.
 CORE_COMMANDS = [("help", "Your commands", ()), ("features", "What you get — tap to pause/resume", ())]
-ADMIN_COMMANDS = [("status", "VM health, people, AI models, next runs", ()),
+ADMIN_COMMANDS = [("status", "App status: alarms, jobs, people, AI models", ()),
                   ("run", "Run a scheduled job now", ("/run <job> — /run alone lists the jobs",))]
 CORE_ALIASES = {"pause": "/features (tap a feature)", "resume": "/features (tap a feature)"}
 
@@ -60,6 +59,7 @@ class BotApp:
             for pattern, handler in f.callbacks:
                 self.app.add_handler(CallbackQueryHandler(self._bind(handler), pattern=pattern))
         self.app.add_handler(CallbackQueryHandler(self.pick_profile, pattern=r"^reg:"))
+        self.app.add_error_handler(self._on_error)
         self.app.add_handler(CallbackQueryHandler(self.toggle_feature, pattern=r"^feat:"))
 
     def _bind(self, handler):
@@ -95,27 +95,29 @@ class BotApp:
         self.scheduler.add_job(self._heartbeat, IntervalTrigger(seconds=30), id="heartbeat")
 
     @staticmethod
+    async def _on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Telegram's polling hits brief 'Bad Gateway' / timeouts that the library retries by itself:
+        log one line for those; keep full tracebacks for real bugs."""
+        from telegram.error import NetworkError, TimedOut
+        if isinstance(ctx.error, NetworkError | TimedOut):
+            log.warning("Telegram network blip (auto-retried): %s", ctx.error)
+        else:
+            log.error("Unhandled error in update %s", update, exc_info=ctx.error)
+
+    @staticmethod
     def _heartbeat() -> None:
         HEARTBEAT_FILE.write_text(str(int(time.time())))
 
-    def _trigger(self, spec: dict | str) -> CronTrigger:
-        return CronTrigger.from_crontab(spec, timezone=self.cfg.tz) if isinstance(spec, str) \
-            else CronTrigger(timezone=self.cfg.tz, **spec)
-
     def _schedule(self) -> None:
         s = self.services
-        for job_id, (fn, spec) in s.jobs().items():
-            if spec:
-                self.scheduler.add_job(fn, self._trigger(spec), args=[s], id=job_id,
-                                       misfire_grace_time=3600, coalesce=True, max_instances=1)
-        for f in s.features:
-            for job_id, fn, kwargs, spec in (f.profile_jobs(s) if f.profile_jobs else []):
-                self.scheduler.add_job(fn, self._trigger(spec), args=[s], kwargs=kwargs, id=job_id,
-                                       misfire_grace_time=3600, coalesce=True, max_instances=1)
+        for job_id, fn, kwargs, spec in s.scheduled_jobs():      # each wrapped in the run ledger
+            self.scheduler.add_job(fn, monitoring.make_trigger(spec, self.cfg.tz), args=[s], kwargs=kwargs, id=job_id,
+                                   misfire_grace_time=3600, coalesce=True, max_instances=1)
 
     # ---- helpers (also used by feature handlers) --------------------------------------------
     async def _reply(self, update: Update, text: str) -> None:
-        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        for chunk in split_message(text):
+            await update.effective_message.reply_text(chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
     async def _profile(self, update: Update) -> str | None:
         pid = self.db.profile_for(update.effective_chat.id)
@@ -272,28 +274,32 @@ class BotApp:
 
     # ---- admin ---------------------------------------------------------------------------
     async def status(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        """Admin page: feature sections (e.g. VM health), people + features, AI model health, next runs."""
+        """Admin page about the app: alarms, every job's last run + next run, people, AI models.
+        (The VM itself is /health.)"""
         if not (pid := await self._profile(update)):
             return
         if pid != self.cfg.primary_profile:
             await self._reply(update, "Only the primary user can see status.")
             return
-        await self._reply(update, "Checking… (OCI metrics take a few seconds)")
-        s, lines = self.services, []
+        s = self.services
+        lines = ["📊 <b>Nari status</b>", ""] + monitoring.format_alarms(s) + [""]
+        nxt = {j.id: j.next_run_time for j in self.scheduler.get_jobs() if j.next_run_time}
+        lines += monitoring.format_jobs(s, nxt) + [""]
         for f in s.features:
             if f.status_section and f.name in s.access.allowed(pid):
                 lines += await f.status_section(s, pid) + [""]
         lines += ["<b>People</b>"]
         for p, prof in self.cfg.profiles.items():
+            # Same rule as menus and /features: a feature counts only if it's allowed AND set up for them.
             reg = "registered" if self.db.chat_ids_for([p]) else "not registered"
-            on = [f for f in s.access.allowed(p) if f not in s.access.paused(p)]
-            off = s.access.paused(p)
+            paused = s.access.paused(p)
+            ready = [f.name for f in s.features if self._ready(p, f)]
+            idle = [f for f in s.access.allowed(p) if f not in ready]
+            on, off = [f for f in ready if f not in paused], [f for f in ready if f in paused]
             lines.append(f"• {html.escape(prof['name'])} ({reg}): " + (", ".join(on) or "nothing")
-                         + (f" · paused: {', '.join(off)}" if off else ""))
+                         + (f" · paused: {', '.join(off)}" if off else "")
+                         + (f" · allowed, not set up: {', '.join(idle)}" if idle else ""))
         lines += ["", "<b>AI models</b>"] + [f"• {html.escape(x)}" for x in s.llm_health.summary()]
-        lines += ["", "<b>Next runs</b>"] + [f"• {j.id}: {j.next_run_time:%a %b %d %H:%M}"
-                                             for j in sorted(self.scheduler.get_jobs(), key=lambda j: j.next_run_time)
-                                             if j.id != "heartbeat"]
         await self._reply(update, "\n".join(lines))
 
     async def run(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

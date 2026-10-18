@@ -1,4 +1,4 @@
-"""VM + bot health (admin only): local metrics, job status, optional OCI metrics, threshold alarms.
+"""VM health (admin only): local metrics, optional OCI metrics, threshold alarms. (Job health is app/monitoring.py.)
 
 Local metrics come from the container's view of the host (/proc and statvfs reflect the VM: Docker
 doesn't namespace them here). OCI metrics use an *instance principal* — the VM authenticates as itself,
@@ -13,7 +13,7 @@ import logging
 import os
 import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
 from typing import Any
@@ -39,8 +39,6 @@ class Metrics:
     data_mb: float = 0.0
     backups_mb: float = 0.0
     newest_backup_age_d: float | None = None
-    job_failures: dict[str, list[float]] = field(default_factory=dict)   # job -> failure timestamps
-    last_errors: dict[str, str] = field(default_factory=dict)
     oci: dict[str, Any] | None = None
 
     @property
@@ -88,10 +86,6 @@ def collect(db: Any, data_dir: Path, backup_dir: Path, process_start: float, now
     m.data_mb, m.backups_mb = _dir_mb(data_dir), _dir_mb(backup_dir) if backup_dir.exists() else 0.0
     backups = sorted(backup_dir.glob("nari-*.db")) if backup_dir.exists() else []
     m.newest_backup_age_d = (now - backups[-1].stat().st_mtime) / 86400 if backups else None
-    for k, v in db.kv_like("health:fail:%"):
-        d = json.loads(v)
-        m.job_failures[k.split(":", 2)[2]] = [t for t in d.get("ts", []) if t > now - 86400]
-        m.last_errors[k.split(":", 2)[2]] = d.get("msg", "")
     return m
 
 
@@ -113,15 +107,6 @@ def restarts_24h(db: Any, now: float | None = None) -> int:
     for _, cid in _starts(db, now or time.time()):
         per_container[cid] = per_container.get(cid, 0) + 1
     return sum(n - 1 for n in per_container.values())
-
-
-def record_failure(db: Any, job: str, msg: str, now: float | None = None) -> None:
-    now = now or time.time()
-    key = f"health:fail:{job}"
-    d = json.loads(db.get_kv(key) or "{}")
-    d["ts"] = [t for t in d.get("ts", []) if t > now - 86400][-19:] + [now]
-    d["msg"] = msg[:200]
-    db.set_kv(key, json.dumps(d))
 
 
 # ---- OCI (instance principal) ---------------------------------------------------------------
@@ -184,9 +169,11 @@ def oci_metrics(timeout: float = 20) -> dict[str, Any]:
 
 # ---- alarms -------------------------------------------------------------------------------
 
-def conditions(m: Metrics, t: dict[str, Any], now: float | None = None) -> list[tuple[str, bool, str]]:
+WARNING_ONLY = {"load", "swap"}     # 🟡: worth knowing, not urgent
+
+
+def conditions(m: Metrics, t: dict[str, Any]) -> list[tuple[str, bool, str]]:
     """(alarm key, firing?, description) for every rule; firing state is compared with the last check."""
-    now = now or time.time()
     out = [
         ("disk", m.disk_used_pct >= t["disk_pct"], f"Disk {m.disk_used_pct:.0f}% used (alarm ≥ {t['disk_pct']}%)"),
         ("memory", m.mem_used_pct >= t["mem_pct"], f"Memory {m.mem_used_pct:.0f}% used (alarm ≥ {t['mem_pct']}%)"),
@@ -198,25 +185,9 @@ def conditions(m: Metrics, t: dict[str, Any], now: float | None = None) -> list[
         ("backup", m.newest_backup_age_d is not None and m.newest_backup_age_d > t["backup_max_age_days"],
          f"Newest backup is {m.newest_backup_age_d or 0:.0f} days old (alarm > {t['backup_max_age_days']})"),
     ]
-    window = t["job_failures_hours"] * 3600
-    for job, ts in m.job_failures.items():
-        recent = [x for x in ts if x > now - window]
-        out.append((f"job:{job}", len(recent) >= t["job_failures"],
-                    f"Job '{job}' failed {len(recent)}× in {t['job_failures_hours']}h: {m.last_errors.get(job, '')[:120]}"))
     if m.oci and "error" not in m.oci:
         out.append(("oci_state", m.oci.get("state") not in (None, "RUNNING"), f"OCI instance state {m.oci.get('state')}"))
     return out
-
-
-def transitions(db: Any, conds: list[tuple[str, bool, str]]) -> list[tuple[str, bool, str]]:
-    """Only conditions whose firing state changed since the last check: (key, now_firing, description)."""
-    changed = []
-    for key, firing, desc in conds:
-        was = db.get_kv(f"alarm:{key}") == "1"
-        if firing != was:
-            db.set_kv(f"alarm:{key}", "1" if firing else "0")
-            changed.append((key, firing, desc))
-    return changed
 
 
 # ---- formatting -----------------------------------------------------------------------------
@@ -225,8 +196,8 @@ def _icon(bad: bool) -> str:
     return "🔴" if bad else "🟢"
 
 
-def format_health(m: Metrics, t: dict[str, Any], now: float | None = None) -> str:
-    firing = {k for k, f, _ in conditions(m, t, now) if f}
+def format_health(m: Metrics, t: dict[str, Any]) -> str:
+    firing = {k for k, f, _ in conditions(m, t) if f}
     lines = ["🩺 <b>VM health</b>"]
     lines.append(f"{_icon('disk' in firing)} Disk {m.disk_used_pct:.0f}% of {m.disk_total_gb:.0f} GB")
     lines.append(f"{_icon('memory' in firing)} Memory {m.mem_used_pct:.0f}% of {m.mem_total_mb / 1024:.1f} GB"
@@ -249,11 +220,4 @@ def format_health(m: Metrics, t: dict[str, Any], now: float | None = None) -> st
             if "net_in_mb" in o:
                 parts.append(f"net ↓{o['net_in_mb']:.1f} ↑{o.get('net_out_mb', 0):.1f} MB")
             lines.append(f"{_icon('oci_state' in firing)} OCI (1h): " + " · ".join(parts))
-    failing = [(j, ts) for j, ts in m.job_failures.items() if ts]
-    if failing:
-        lines.append("\n<b>Job failures (24h)</b>")
-        lines += [f"{_icon(f'job:{j}' in firing)} {html.escape(j)}: {len(ts)}× — {html.escape(m.last_errors.get(j, '')[:100])}"
-                  for j, ts in sorted(failing)]
-    else:
-        lines.append("🟢 No job failures in 24h")
     return "\n".join(lines)

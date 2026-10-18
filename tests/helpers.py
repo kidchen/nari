@@ -141,7 +141,7 @@ def _re_jobs(db, notifier):
 
 def _thresholds():
     return {"disk_pct": 85, "mem_pct": 90, "load_per_core": 2.0, "swap_pct": 50, "restarts_24h": 3,
-            "backup_max_age_days": 9, "job_failures": 3, "job_failures_hours": 6}
+            "backup_max_age_days": 9}
 
 
 def _paper(doi, title, abstract="", cat="neuroscience", posted="2026-10-14", version=1):

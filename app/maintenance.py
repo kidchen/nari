@@ -7,6 +7,7 @@ Retention (nightly):
   re_events          30 days    — real-estate alerts, delivered per person (deliveries table follows)
   quarter state      keep previous, current and next quarter (5% categories, /setcats, activations)
   err_alert / llm    30 days
+  job_runs           30 days    — the job ledger behind /status and the job alarms
   ticker info cache  30 days    — refetched from Yahoo after expiry
 Backups (weekly): sqlite online-backup into BACKUP_DIR, newest N kept.
 """
@@ -72,6 +73,7 @@ def prune(db: DB, today: date | None = None, now: float | None = None) -> dict[s
         out["listings"] = c.execute("DELETE FROM listings WHERE last_seen < ?", (iso(LISTING_RETENTION_DAYS),)).rowcount
         out["biorxiv"] = c.execute("DELETE FROM biorxiv_history WHERE sent < ?", (iso(BIORXIV_RETENTION_DAYS),)).rowcount
         out["re_events"] = c.execute("DELETE FROM re_events WHERE created < ?", (iso(SHORT_RETENTION_DAYS),)).rowcount
+        out["job_runs"] = c.execute("DELETE FROM job_runs WHERE started < ?", (now - SHORT_RETENTION_DAYS * 86400,)).rowcount
         out["deliveries"] = c.execute("DELETE FROM deliveries WHERE event_id NOT IN (SELECT id FROM re_events)").rowcount
         stale_quarters = []
         for (k,) in c.execute("SELECT k FROM kv"):
@@ -102,6 +104,9 @@ def one_time_cleanup(db: DB) -> dict[str, int]:
         out["legacy_listings"] = c.execute("DELETE FROM listings WHERE key LIKE 'addr:%' AND url LIKE '%/zipcode/%'").rowcount
         out["offers_table"] = 1 if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='offers'").fetchone() else 0
         c.execute("DROP TABLE IF EXISTS offers")
+        # Pre-ledger job failure tracking (health:fail:<job>) and its old-format job alarms.
+        out["legacy_job_health"] = c.execute(
+            "DELETE FROM kv WHERE k LIKE 'health:fail:%' OR (k LIKE 'alarm:job:%' AND v IN ('0', '1'))").rowcount
     return out
 
 

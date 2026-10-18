@@ -9,7 +9,7 @@ A Telegram bot for a household, run as one Docker container on a small VM. It se
 | `cards` | This quarter's 5% categories for your rotating cards, activation status, next quarter's preview, and reminders | Read from your forwarded bank emails; plan on the 1st of each quarter; reminder on the 15th if not activated |
 | `biorxiv` | New bioRxiv preprints matching your keywords and context terms, each summarized in 3 bullets (goal, method, finding) | Your own cron, e.g. Mon–Fri 08:00 |
 | `placeholder` *(admin)* | Monthly parking placeholder image (watermarked, not a receipt) | 1st of the month, 08:00 |
-| `vmhealth` *(admin)* | VM, bot and OCI health alarms (one message when a threshold is crossed, one on recovery) | Checked every 10 min |
+| `vmhealth` *(admin)* | `/health` on demand; alarms when disk, memory, load, backups or the OCI instance cross a threshold | Checked every 10 min |
 
 Everything personal is kept per person: lists, cards, activation status, paper keywords, deliveries and pauses. Only public data is shared: prices, news, calendars, 5% category lists and mortgage rates.
 
@@ -26,10 +26,11 @@ Register once by sending `/start <INVITE_CODE>`, then tap your name. `/help` and
 | `/portfolio`, `/watch` | Show your lists; `add IBM KO` or `del KO` to change them. Tickers are checked against Yahoo. |
 | `/cards` | This quarter's 5% categories and activation status. `/cards dining` says which card to use. `/cards fix <card> A, B` is a rare manual correction. |
 | `/papers` | New papers now. `/papers topics` shows your keywords and context terms. `/papers add kw\|alt`, `/papers del 2`, `/papers context add …` and `/papers reset` edit them. |
-| `/status` *(admin)* | VM and OCI health, people and their features, AI model health, next runs |
-| `/run <job>` *(admin)* | Run a job now: `mail realestate cardmail mortgage market evening cards activation papers health cleanup backup placeholder` |
+| `/status` *(admin)* | App status: firing alarms (and those resolved in 24h), every job's last run with what it did and its next run, people and their features, AI model health |
+| `/health` *(admin)* | VM and OCI health: disk, memory, load, uptime, restarts, backups |
+| `/run <job>` *(admin)* | Run a job now: `mail realestate cardmail mortgage market evening cards activation papers alarms cleanup backup placeholder` |
 
-Older commands (`/pause`, `/resume`, `/best`, `/setcats`, `/topics`, `/health`) still work and reply with their new form.
+Older commands (`/pause`, `/resume`, `/best`, `/setcats`, `/topics`) still work and reply with their new form.
 
 ---
 
@@ -148,9 +149,19 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 - **Gmail:** IMAP read-only with an app password, one login per 2-hourly check. Only Message-ID headers are fetched first; bodies are downloaded only for unseen mail. Nothing is ever marked read or moved.
 - **Storage:** one SQLite file of about 100 KB. Retention: Gmail IDs 180 days (always longer than the look-back), listings 180 days, alerts 30 days, sent papers 90 days, card quarters for the previous/current/next quarter, small caches 30 days. A nightly cleanup runs at 03:00, with VACUUM on Sundays.
 
+## Monitoring and alarms (admin only)
+
+Every job run (scheduled or `/run`) is recorded with what it did, e.g. "new mail: realestate 2, cards 0 · 3 message(s) sent", and any error, even one the job caught. `/status` shows the latest run of each job. Every 10 minutes the `alarms` job checks:
+
+- **Job failed:** the last run had an error. 🟡 at first, 🔴 after 3 failed runs in a row.
+- **Missed run:** a scheduled time passed 30 minutes ago and the job never started (e.g. the scheduler silently dropped it).
+- **VM** (thresholds in `vm_health.thresholds`): 🔴 disk ≥ 85%, memory ≥ 90%, ≥ 3 crash restarts in 24h (deploys don't count), newest backup older than 9 days, OCI instance not running; 🟡 15-min load ≥ 2/core, swap ≥ 50%.
+
+The primary profile gets one message when an alarm fires (🚨/⚠️), escalates or recovers (✅), at any hour, plus one "still firing" reminder a day. Settings are under `monitoring:`. A failed job alarms right when the run ends rather than at the next check. Errors outside jobs (e.g. in a command) still send a direct message, at most once per 6h.
+
 ## VM health (admin only)
 
-- **Alarms** (thresholds in `vm_health.thresholds`): disk ≥ 85%, memory ≥ 90%, 15-min load ≥ 2/core, swap ≥ 50%, ≥ 3 crash restarts in 24h (deploys don't count), newest backup older than 9 days, the same job failing ≥ 3× in 6h, OCI instance not running.
+- **`/health`** shows disk, memory, load, uptime, restarts, data and backup sizes, and OCI metrics. The thresholds above raise alarms.
 - **Watchdog:** a systemd timer on the VM, installed by `deploy.sh`, checks the container every 5 min. It messages the admin through the Telegram API if the bot is down for two checks in a row, and again when it recovers.
 - **OCI metrics, one-time setup (instance principal, no key stored):**
   1. Console → Identity & Security → Domains → Default → **Dynamic groups** → create `nari-vm` with the rule `Any {instance.id = '<instance OCID>'}`.
@@ -159,7 +170,7 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
      Allow dynamic-group nari-vm to read metrics in tenancy
      Allow dynamic-group nari-vm to read instances in tenancy
      ```
-  3. `/status` should show OCI state, CPU, memory and network within a minute.
+  3. `/health` should show OCI state, CPU, memory and network within a minute.
 
 ## Troubleshooting
 
@@ -170,13 +181,14 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 | A Redfin email produced nothing | Account and passcode emails are skipped by design. For a new layout, check the logs for "trying LLM extraction". |
 | 5% categories missing | The forwarded email may be in Gmail Spam, which is fine since Spam is checked. Make sure the forwarding rule matches "5%". `/run cardmail` checks now. |
 | Activation status not updating | The sender isn't linked to a person: set `email_from` on their profile. Discover never confirms, so tap ✅ instead. |
-| `/status` says OCI "not permitted" | Dynamic group or policy missing (see above). |
+| `/health` says OCI "not permitted" | Dynamic group or policy missing (see above). |
 
 ## Project layout
 
 ```
 app/
   main.py          Telegram wiring: registration, /help, /features, /status, /run (feature-agnostic)
+  monitoring.py    job run ledger, missed-run / job / feature alarms, alarm messages, /status sections
   services.py      shared services for features: config, DB, notifier, access, Gemini, errors, Gmail check
   registry.py      Feature / Command / Job / MailQuery types
   access.py        who may use which feature (allowed + paused)
@@ -196,11 +208,11 @@ tests/             one test file per feature, plus helpers.py
 1. Create `app/features/<name>/` containing your logic and a `feature.py` that defines `FEATURE = Feature(...)` (see `app/registry.py`):
    - `commands`: each one's name, a one-line description, `handler(bot, update, ctx)` and usage lines;
    - `jobs`: an id (also its `/run` name), `run(services, force=False)`, and a schedule read from settings;
-   - optional: `mail` (a Gmail search that shares the 2-hourly login), `profile_jobs` (per-person schedules), `ready(services, pid)` ("is it set up for this person?"), `on_startup`, `status_section`, `aliases`, `callbacks`, `admin_only`.
+   - optional: `mail` (a Gmail search that shares the 2-hourly login), `profile_jobs` (per-person schedules), `ready(services, pid)` ("is it set up for this person?"), `on_startup`, `status_section`, `alarms` (async, returns `monitoring.Alarm`s checked every 10 min), `aliases`, `callbacks`, `admin_only`.
 2. Add it to `ALL` in `app/features/__init__.py`.
 3. Add its defaults to `config/settings.yaml`, then grant it to people in `features:`.
 
-That's all. `/help`, the "/" menu, `/features`, `/run`, `/status`, the schedule and the shared Gmail check pick it up automatically (`tests/test_registry.py` checks this). Use `services.llm(...)`, `services.report_error(...)` and `services.send_isolated(...)` rather than writing your own.
+That's all. `/help`, the "/" menu, `/features`, `/run`, `/status`, the schedule and the shared Gmail check pick it up automatically (`tests/test_registry.py` checks this). Use `services.llm(...)`, `services.report_error(...)` and `services.send_isolated(...)` rather than writing your own. Every job is recorded automatically; call `monitoring.note("…")` to say what it did.
 
 ## Tests
 

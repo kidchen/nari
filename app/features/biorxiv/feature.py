@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import date, timedelta
 
+from app import monitoring
 from app.features.biorxiv import biorxiv
 from app.registry import Alias, Command, Feature, Job
 
@@ -65,6 +66,7 @@ async def run(s, force: bool = False, pid: str | None = None) -> None:
             continue                                     # not registered yet: papers wait for them
         try:
             text, dois, end = await asyncio.to_thread(build, s, p)
+            monitoring.note(f"{p}: {len(dois)} paper(s)")
             if text:
                 if not await s.n.send_text([p], text):
                     continue                             # nothing delivered: keep them for next time

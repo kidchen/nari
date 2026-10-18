@@ -142,7 +142,7 @@ def test_prune_retention_rules(tmp_path):
     db.set_kv("tick:NEW", json.dumps({"name": "n", "type": "EQUITY", "ts": now}))
     db.set_kv("llm_health", json.dumps({"gone": {"last_ok": now - 40 * 86400}, "live": {"last_ok": now}}))
     out = mt.prune(db, today=date(2026, 11, 1), now=now)
-    assert out == {"emails": 1, "listings": 1, "biorxiv": 0, "re_events": 0, "deliveries": 0, "quarters": 2, "err_alerts": 1,
+    assert out == {"emails": 1, "listings": 1, "biorxiv": 0, "re_events": 0, "job_runs": 0, "deliveries": 0, "quarters": 2, "err_alerts": 1,
                    "ticker_info": 1, "llm_models": 1}
     keys = {k for k, _ in db.kv_like("%")}
     assert {"rotq:chase:2026Q3", "rotq:chase:2026Q4", "rotq:chase:2027Q1", "rotating:disc:2026Q3"} <= keys  # prev/cur/next
@@ -157,8 +157,10 @@ def test_one_time_cleanup_backup_and_retention_guard(tmp_path):
         c.execute("CREATE TABLE offers (id INTEGER)")
         c.execute("INSERT INTO listings VALUES ('addr:1 elm|94000','https://www.redfin.com/zipcode/94000','1 Elm',1,'for_sale','t','t')")
         c.execute("INSERT INTO listings VALUES ('redfin:9','https://www.redfin.com/home/9','2 Oak',1,'for_sale','t','t')")
-    assert mt.one_time_cleanup(db) == {"legacy_listings": 1, "offers_table": 1}
-    assert mt.one_time_cleanup(db) == {"legacy_listings": 0, "offers_table": 0}          # idempotent
+    db.set_kv("health:fail:gmail", "{}"); db.set_kv("alarm:job:gmail", "1"); db.set_kv("alarm:disk", "1")
+    assert mt.one_time_cleanup(db) == {"legacy_listings": 1, "offers_table": 1, "legacy_job_health": 2}
+    assert mt.one_time_cleanup(db) == {"legacy_listings": 0, "offers_table": 0, "legacy_job_health": 0}  # idempotent
+    assert db.get_kv("alarm:disk") == "1"                                                   # VM alarm state kept
     for _ in range(3):
         mt.backup(db, tmp_path / "bk", keep=2)
         _t = __import__("time"); _t.sleep(1.01)
