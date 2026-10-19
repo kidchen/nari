@@ -79,6 +79,10 @@ class BotApp:
         record_start(self.db)
         self._write_admin_chat()
         log.info("One-time cleanup: %s", maintenance.one_time_cleanup(self.db))
+        from app.services import BACKUP_DIR
+        recipient = self.cfg.settings.get("maintenance", {}).get("backup_age_recipient")
+        if n := maintenance.encrypt_old_backups(BACKUP_DIR, recipient):
+            log.info("Encrypted %d old plaintext backup(s)", n)
         for f in self.services.features:
             if f.on_startup:
                 f.on_startup(self.services)

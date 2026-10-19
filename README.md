@@ -172,6 +172,29 @@ The primary profile gets one message when an alarm fires (🚨/⚠️), escalate
      ```
   3. `/health` should show OCI state, CPU, memory and network within a minute.
 
+## Server hardening (one-time, done by hand on the VM)
+
+SSH stays on the public port, key-only:
+- `/etc/ssh/sshd_config.d/10-nari-hardening.conf`: no root, only `opc`, no passwords, 3 tries.
+- fail2ban (Oracle EPEL) bans an IP for 1h after 5 failed logins, longer for repeat offenders.
+- `dnf-automatic` applies security updates daily, with no automatic reboot.
+- rpcbind is masked.
+
+Tailscale (exit node) is untouched. Keep the OCI rule for UDP 41641 so phones in other countries can connect directly.
+
+## Backups (encrypted)
+
+The weekly backups in the `nari-backups` volume, and the copy `deploy.sh` saves to `backups/`, are encrypted with [age](https://age-encryption.org).
+- The server has only the public key (`maintenance.backup_age_recipient` in `settings.local.yaml`), so it can write backups but not read them.
+- The private key is `~/.config/nari/backup-age-key.txt`, with a copy in your password manager. **Without it the backups can't be restored.**
+
+Restore:
+```
+age -d -i ~/.config/nari/backup-age-key.txt -o nari.db backups/nari-YYYYMMDD.db.age
+sqlite3 nari.db "PRAGMA integrity_check"
+# then copy nari.db into the nari-data volume as /app/data/nari.db (bot stopped)
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
@@ -223,6 +246,7 @@ That's all. `/help`, the "/" menu, `/features`, `/run`, `/status`, the schedule 
 ## Sources
 
 - [bioRxiv API](https://api.biorxiv.org/): ⚠️ External link, accessed 2026-10-15
+- [age encryption](https://age-encryption.org): ⚠️ External link, accessed 2026-10-18
 - [FRED MORTGAGE30US](https://fred.stlouisfed.org/series/MORTGAGE30US): ⚠️ External link, accessed 2026-10-13
 - [python-telegram-bot](https://docs.python-telegram-bot.org/): ⚠️ External link, accessed 2026-10-13
 - [APScheduler 3.x CronTrigger](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html): ⚠️ External link, accessed 2026-10-13

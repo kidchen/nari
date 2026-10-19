@@ -84,7 +84,8 @@ def collect(db: Any, data_dir: Path, backup_dir: Path, process_start: float, now
     m.bot_uptime_h = (now - process_start) / 3600
     m.restarts_24h = restarts_24h(db, now)
     m.data_mb, m.backups_mb = _dir_mb(data_dir), _dir_mb(backup_dir) if backup_dir.exists() else 0.0
-    backups = sorted(backup_dir.glob("nari-*.db")) if backup_dir.exists() else []
+    backups = sorted(list(backup_dir.glob("nari-*.db")) + list(backup_dir.glob("nari-*.db.age")),
+                     key=lambda p: p.stat().st_mtime) if backup_dir.exists() else []
     m.newest_backup_age_d = (now - backups[-1].stat().st_mtime) / 86400 if backups else None
     return m
 

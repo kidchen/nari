@@ -227,13 +227,18 @@ REMOTE_SCRIPT
 
 ok "deployed to $REMOTE:~/$REMOTE_DIR"
 
-# Off-VM copy of the newest weekly backup (git-ignored backups/ folder, newest 8 kept).
+# Off-VM copy of the newest weekly backup (git-ignored backups/ folder, newest 8 kept). Backups are
+# age-encrypted on the server (public key only there); decrypt with the private key, see README.
 mkdir -p backups
 LOCAL_BAK="backups/nari-$(date +%Y%m%d).db"
-if remote "docker run --rm -v nari-backups:/b --entrypoint sh nari:latest -c 'f=\$(ls -1t /b/nari-*.db 2>/dev/null | head -1); [ -n \"\$f\" ] && cat \"\$f\"'" > "$LOCAL_BAK.part" 2>/dev/null \
+if remote "docker run --rm -v nari-backups:/b --entrypoint sh nari:latest -c 'f=\$(ls -1t /b/nari-*.db /b/nari-*.db.age 2>/dev/null | head -1); [ -n \"\$f\" ] && cat \"\$f\"'" > "$LOCAL_BAK.part" 2>/dev/null \
    && [ -s "$LOCAL_BAK.part" ]; then
-  mv "$LOCAL_BAK.part" "$LOCAL_BAK"; ok "copied newest server backup to $LOCAL_BAK"
-  ls -1t backups/nari-*.db | tail -n +9 | xargs rm -f 2>/dev/null || true
+  if head -c 21 "$LOCAL_BAK.part" | grep -q "age-encryption.org/v1"; then
+    mv "$LOCAL_BAK.part" "$LOCAL_BAK.age"; rm -f "$LOCAL_BAK"; ok "copied newest server backup (encrypted) to $LOCAL_BAK.age"
+  else
+    mv "$LOCAL_BAK.part" "$LOCAL_BAK"; warn "newest server backup is NOT encrypted (set maintenance.backup_age_recipient): $LOCAL_BAK"
+  fi
+  ls -1t backups/nari-*.db backups/nari-*.db.age 2>/dev/null | tail -n +9 | xargs rm -f 2>/dev/null || true
 else
   rm -f "$LOCAL_BAK.part"; warn "no server backup yet (weekly, Sundays 03:30; or /run backup)"
 fi

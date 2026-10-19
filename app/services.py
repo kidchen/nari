@@ -130,10 +130,11 @@ class Services:
 
     async def backup(self, force: bool = False) -> None:
         try:
-            keep = self.cfg.settings.get("maintenance", {}).get("backup_keep", 8)
-            path = await asyncio.to_thread(maintenance.backup, self.db, BACKUP_DIR, keep)
+            mt = self.cfg.settings.get("maintenance", {})
+            recipient = mt.get("backup_age_recipient")
+            path = await asyncio.to_thread(maintenance.backup, self.db, BACKUP_DIR, mt.get("backup_keep", 8), recipient)
             log.info("Backup written: %s", path)
-            monitoring.note(f"{path.name}, {path.stat().st_size / 1e6:.1f} MB")
+            monitoring.note(f"{path.name}, {path.stat().st_size / 1e6:.1f} MB" + ("" if recipient else ", UNENCRYPTED"))
             if force:
                 await self.n.send_text([self.cfg.primary_profile], f"💾 Backup written: {path.name}")
         except Exception as e:  # noqa: BLE001

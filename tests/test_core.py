@@ -178,3 +178,31 @@ def test_ticker_info_cache_persists():
     c = TickerInfoCache(db)
     c["IBM"] = ("International Business Machines", "EQUITY")
     assert TickerInfoCache(db)["IBM"] == ("International Business Machines", "EQUITY")
+
+
+def test_backups_are_age_encrypted_and_old_ones_converted(tmp_path):
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from app import maintenance as mt
+    if not shutil.which("age"):
+        pytest.skip("age not installed")
+    key = tmp_path / "key.txt"
+    subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+    recipient = subprocess.run(["age-keygen", "-y", str(key)], check=True, capture_output=True, text=True).stdout.strip()
+    db = DB(tmp_path / "n.db")
+    db.set_kv("hello", "world")
+    bk = tmp_path / "bk"
+    old = mt.backup(db, bk)                                    # before a key was configured: plaintext
+    assert old.suffix == ".db"
+    assert mt.encrypt_old_backups(bk, recipient) == 1 and not old.exists()
+    __import__("time").sleep(1.01)                             # file names have 1-second resolution
+    new = mt.backup(db, bk, recipient=recipient)
+    assert new.name.endswith(".db.age") and new.read_bytes().startswith(b"age-encryption.org/v1")
+    assert b"world" not in new.read_bytes()
+    plain = tmp_path / "restored.db"
+    subprocess.run(["age", "-d", "-i", str(key), "-o", str(plain), str(new)], check=True)
+    assert DB(plain).get_kv("hello") == "world"
+    assert sorted(p.name.endswith(".age") for p in bk.iterdir()) == [True, True]

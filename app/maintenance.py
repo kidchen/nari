@@ -114,12 +114,42 @@ def vacuum(db: DB) -> None:
     db._conn.execute("VACUUM")
 
 
-def backup(db: DB, backup_dir: Path, keep: int = 8) -> Path:
-    """Consistent online copy (sqlite backup API) + keep the newest `keep` files."""
+def _age_encrypt(src: Path, recipient: str) -> Path:
+    """Encrypt to <src>.age with an age public key, then remove the plaintext. The server only ever has
+    the public key, so it can write backups but not read them (the private key stays with the admin)."""
+    import subprocess
+    dest = src.with_name(src.name + ".age")
+    subprocess.run(["age", "-r", recipient, "-o", str(dest), str(src)], check=True, capture_output=True, timeout=120)
+    dest.chmod(0o600)
+    src.unlink()
+    return dest
+
+
+def _backups(backup_dir: Path) -> list[Path]:
+    return sorted(list(backup_dir.glob("nari-*.db")) + list(backup_dir.glob("nari-*.db.age")), key=lambda p: p.name)
+
+
+def backup(db: DB, backup_dir: Path, keep: int = 8, recipient: str | None = None) -> Path:
+    """Consistent online copy (sqlite backup API), age-encrypted if `recipient` is set; keep the newest `keep`."""
     backup_dir.mkdir(parents=True, exist_ok=True)
     dest = backup_dir / f"nari-{datetime.now():%Y%m%d-%H%M%S}.db"
     with sqlite3.connect(dest) as out:
         db._conn.backup(out)
-    for old in sorted(backup_dir.glob("nari-*.db"))[:-keep]:
+    dest.chmod(0o600)
+    if recipient:
+        dest = _age_encrypt(dest, recipient)
+    else:
+        log.warning("Backup written UNENCRYPTED: set maintenance.backup_age_recipient")
+    for old in _backups(backup_dir)[:-keep]:
         old.unlink()
     return dest
+
+
+def encrypt_old_backups(backup_dir: Path, recipient: str | None) -> int:
+    """Once a recipient is configured, encrypt any plaintext backups left from before (idempotent)."""
+    if not recipient or not backup_dir.exists():
+        return 0
+    plain = sorted(backup_dir.glob("nari-*.db"))
+    for p in plain:
+        _age_encrypt(p, recipient)
+    return len(plain)
