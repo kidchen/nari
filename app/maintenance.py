@@ -55,7 +55,8 @@ def _quarter_index(year: int, q: int) -> int:
 
 
 def check_email_retention(settings: dict[str, Any]) -> None:
-    lookbacks = [settings["real_estate"]["email"]["lookback_days"], settings["cards"]["email"]["lookback_days"]]
+    lookbacks = [settings["real_estate"]["email"]["lookback_days"], settings["cards"]["email"]["lookback_days"],
+                 ((settings.get("expenses") or {}).get("alerts") or {}).get("lookback_days", 14)]
     if EMAIL_RETENTION_DAYS <= max(lookbacks):
         raise ValueError(f"processed_emails retention ({EMAIL_RETENTION_DAYS}d) must exceed the longest Gmail "
                          f"look-back ({max(lookbacks)}d), or old emails would be processed again")

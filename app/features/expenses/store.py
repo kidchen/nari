@@ -136,3 +136,17 @@ def spending(db: DB, owner: str, start: date, end: date) -> list:
 
 def statements(db: DB, owner: str) -> list:
     return db.rows("SELECT * FROM expense_statements WHERE owner=? ORDER BY end DESC", (owner,))
+
+
+def add_alert(db: DB, owner: str, alert, message_id: str) -> str:
+    """'added', 'covered' (a statement already covers that card and day: it's authoritative) or 'duplicate'."""
+    covered = db.rows("SELECT 1 FROM expense_statements WHERE owner=? AND bank=? AND last4=? AND start<=? AND end>=?",
+                      (owner, alert.bank, alert.last4, alert.date.isoformat(), alert.date.isoformat()))
+    if covered:
+        return "covered"
+    with db.tx() as c:
+        n = c.execute("INSERT OR IGNORE INTO expense_txns(id, owner, bank, last4, date, amount, description, kind, "
+                      "bank_category, source, merchant) VALUES (?,?,?,?,?,?,?,?,'','alert',?)",
+                      (f"alert:{message_id}", owner, alert.bank, alert.last4, alert.date.isoformat(), alert.amount_cents,
+                       alert.merchant, alert.kind, C.merchant_key(alert.merchant))).rowcount
+    return "added" if n else "duplicate"

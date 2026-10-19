@@ -116,6 +116,7 @@ SEED: list[tuple[str, str, str]] = [
     # kids & education / gifts / insurance
     (r"KUMON|TUTOR|ACADEMY|SCHOOL|UNIVERSITY|COLLEGE|UDEMY|COURSERA", "", "Kids & education"), (r"TOYS?\b|LEGO", "", "Kids & education"),
     (r"GOFUNDME|DONATION|RED CROSS|UNICEF|CHARITY|\bPBS\b|KQED", "", "Gifts & donations"),
+    (r"\bUSPS\b", "USPS", "Other"), (r"\bTHE UPS STORE|\bUPS\b", "UPS", "Other"), (r"FEDEX", "FEDEX", "Other"),
     (r"GEICO|STATE FARM|PROGRESSIVE|ALLSTATE|LEMONADE|INSURANCE", "", "Insurance"),
 ]
 _SEED = [(re.compile(p), name, cat) for p, name, cat in SEED]
@@ -224,7 +225,7 @@ NICE = {"DOORDASH": "DoorDash", "YOUTUBE": "YouTube", "EBAY": "eBay", "IKEA": "I
         "CHICK-FIL-A": "Chick-fil-A", "IN-N-OUT": "In-N-Out", "WEEE!": "Weee!", "MCDONALD'S": "McDonald's",
         "TJX/ROSS": "TJ Maxx / Ross", "FASTRAK": "FasTrak", "CLIPPER/BART": "Clipper/BART", "EV CHARGING": "EV charging",
         "T-MOBILE": "T-Mobile", "XFINITY": "Xfinity", "UBER EATS": "Uber Eats", "AMAZON PRIME": "Amazon Prime",
-        "BOOKING.COM": "Booking.com", "COSTCO.COM": "Costco.com", "HBO": "HBO", "DISNEY+": "Disney+"}
+        "BOOKING.COM": "Booking.com", "COSTCO.COM": "Costco.com", "HBO": "HBO", "DISNEY+": "Disney+", "FEDEX": "FedEx"}
 
 
 def pretty(key: str) -> str:

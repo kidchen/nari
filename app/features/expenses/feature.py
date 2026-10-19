@@ -20,8 +20,8 @@ from pathlib import Path
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app import monitoring
-from app.features.expenses import categories, reports, statements, store
-from app.registry import Command, Feature, Job
+from app.features.expenses import alerts, categories, reports, statements, store
+from app.registry import Command, Feature, Job, MailQuery
 
 log = logging.getLogger(__name__)
 MAX_BYTES = 20 * 1024 * 1024          # Telegram's bot download limit
@@ -180,6 +180,52 @@ def _report_job(kind: str):
 
 def _sched(key: str, default: dict):
     return lambda st: (st.get("expenses") or {}).get(key, default) if (st.get("expenses") or {}).get("reports", True) else None
+
+
+# ---- bank alert emails (between statements) --------------------------------------------------------
+
+def alert_owner(s, alert: alerts.Alert, sender: str) -> str | None:
+    """The card's owner (cards config `last4`); else whoever forwarded it (profiles.<id>.email_from);
+    else the only person with expenses. Ambiguous -> None (skipped, logged)."""
+    for c in s.cfg.cards.values():
+        if alert.last4 in [str(x) for x in (c.get("last4") or [])] and c.get("owner") in s.cfg.profiles:
+            return c["owner"]
+    for pid, p in s.cfg.profiles.items():
+        if any(a and a.lower() in sender.lower() for a in (p.get("email_from") or [])):
+            return pid
+    people = [pid for pid in s.cfg.profiles if "expenses" in s.access.allowed(pid)]
+    return people[0] if len(people) == 1 else None
+
+
+async def handle_mail(s, mails, force: bool = False) -> None:
+    """New alert emails -> charges (silent; they show up in /spend and the reports)."""
+    counts: dict[str, int] = {}
+    try:
+        for m in mails:
+            alert = alerts.parse(m.html)
+            pid = alert and alert_owner(s, alert, m.sender)
+            if not alert or not pid or "expenses" not in s.access.allowed(pid):
+                result = "not a charge" if not alert else "no owner"
+            else:
+                result = store.add_alert(s.db, pid, alert, m.message_id)
+            counts[result] = counts.get(result, 0) + 1
+        if counts.get("added"):
+            await asyncio.to_thread(store.categorize, s.db, _llm(s))
+        s.db.mark_emails_processed([m.message_id for m in mails])
+        if mails:
+            log.info("Card alerts: %s", counts)
+            monitoring.note("card alerts: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    except Exception as e:  # noqa: BLE001
+        await s.report_error("card alerts", e)
+
+
+async def run_alert_check(s, force: bool = False) -> None:
+    """/run spendmail: just this feature's Gmail search (the scheduled `mail` job covers all features)."""
+    await s.mail_check(force, only=["expenses"])
+
+
+def _alerts_cfg(st: dict) -> dict:
+    return {"lookback_days": 14, "mailboxes": ["INBOX", "[Gmail]/Spam"], **((st.get("expenses") or {}).get("alerts") or {})}
 
 
 async def run_categorize(s, force: bool = False) -> None:
@@ -346,7 +392,12 @@ FEATURE = Feature(
                        "/spend fix costco — correct a category · /spend name costco = Costco",
                        "/spend inbox — import saved statements · send a statement PDF to import it")),),
     callbacks=((r"^exp:(imp|no):", on_button), (r"^exp:(fm|fc):", on_fix_button)),
+    mail=MailQuery(criteria=lambda st: alerts.imap_criteria(alerts.SUBJECTS),
+                   lookback_days=lambda st: _alerts_cfg(st)["lookback_days"],
+                   mailboxes=lambda st: tuple(_alerts_cfg(st)["mailboxes"]),
+                   handle=handle_mail),
     jobs=(Job("spendcat", run_categorize, lambda st: {"hour": 4, "minute": 15}),
+          Job("spendmail", run_alert_check),
           Job("spendweek", _report_job("week"), _sched("weekly_schedule", {"day_of_week": "sat", "hour": 8, "minute": 0})),
           Job("spendmonth", _report_job("month"), _sched("monthly_schedule", {"day": 1, "hour": 8, "minute": 5})),
           Job("spendquarter", _report_job("quarter"),

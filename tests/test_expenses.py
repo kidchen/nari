@@ -409,3 +409,62 @@ def test_amex_layout_dates_with_year_five_digit_ending_and_derived_period():
     assert [(t.date, t.kind, t.amount_cents) for t in st.txns] == [
         (date(2026, 9, 20), "payment", -5000), (date(2026, 9, 5), "purchase", 6000), (date(2026, 10, 1), "purchase", 500)]
     assert st.ok
+
+
+# ---- alert emails ----------------------------------------------------------------------------------
+
+BOA_ALERT = """<html><body><table><tr><td>Credit card transaction<br>exceeds alert limit you set</td></tr>
+<tr><td>Unlimited Cash Rewards Visa Signature ending in 4321</td></tr>
+<tr><td>Amount:</td></tr><tr><td>$10.89</td></tr><tr><td>Date:</td></tr><tr><td>October 19, 2026</td></tr>
+<tr><td>Where:</td></tr><tr><td>USPS PO 0123456789</td></tr><tr><td><a href="https://x">View details</a></td></tr>
+<tr><td>Bank of America, N.A. Member FDIC.</td></tr></table></body></html>"""
+
+
+def test_boa_alert_direct_and_forwarded():
+    from app.features.expenses import alerts as A
+    a = A.parse(BOA_ALERT)
+    assert a == A.Alert("boa", "4321", "Unlimited Cash Rewards Visa Signature", date(2026, 10, 19), 1089, "USPS PO 0123456789")
+    fwd = "<div>---------- Forwarded message ---------<br>From: Bank of America &lt;onlinebanking@ealerts.example&gt;</div>" + BOA_ALERT
+    assert A.parse(fwd) == a
+    assert A.parse(BOA_ALERT.replace("transaction<br>exceeds alert limit", "payment received")) is None   # not a charge
+    assert A.parse("<p>Amount: $5.00 Date: October 1, 2026</p>") is None                                   # unknown bank
+
+
+def _mail(mid, html, sender="Bank of America <onlinebanking@ealerts.example>"):
+    from app.integrations.gmail import Mail
+    return Mail(mid, "Credit card transaction exceeds alert limit you set", sender, html)
+
+
+def test_alert_emails_become_charges_until_a_statement_covers_them(tmp_path, monkeypatch):
+    from app.features.expenses import feature as F
+    b, _ = _bot(tmp_path, monkeypatch)
+    s = b.services
+    asyncio.run(F.handle_mail(s, [_mail("<m1>", BOA_ALERT), _mail("<m1>", BOA_ALERT), _mail("<m2>", "<p>hello</p>")]))
+    rows = s.db.rows("SELECT * FROM expense_txns")
+    assert [(r["owner"], r["bank"], r["last4"], r["date"], r["amount"], r["source"], r["category"]) for r in rows] == \
+        [("admin", "boa", "4321", "2026-10-19", 1089, "alert", "Other")]          # only expenses person; dup ignored
+    assert {"<m1>", "<m2>"} <= s.db.processed_email_ids()
+    with s.db.tx() as c:                                                           # statement covering Oct 19 arrives
+        c.execute("INSERT INTO expense_statements VALUES ('st','admin','boa','4321','2026-10-10','2026-11-09',0,0,'x')")
+    asyncio.run(F.handle_mail(s, [_mail("<m3>", BOA_ALERT.replace("$10.89", "$5.00"))]))
+    assert s.db.rows("SELECT count(*) n FROM expense_txns")[0]["n"] == 1             # covered: statement wins
+
+
+def test_alert_owner_by_card_then_forwarder(tmp_path, monkeypatch):
+    from app.features.expenses import alerts as A
+    from app.features.expenses import feature as F
+    b, _ = _bot(tmp_path, monkeypatch)
+    s = b.services
+    a = A.parse(BOA_ALERT)
+    s.cfg.profiles["sci"]["features"] = ["expenses"]                               # now two people have expenses
+    s.cfg.profiles["sci"]["email_from"] = ["sci@example.com"]
+    assert F.alert_owner(s, a, "Bank of America <x@bank.example>") is None          # ambiguous: skipped
+    assert F.alert_owner(s, a, "Sci <sci@example.com>") == "sci"                   # forwarded by sci
+    s.cfg.cards["disc"]["last4"] = ["4321"]                                        # the card's owner wins
+    assert F.alert_owner(s, a, "Sci <sci@example.com>") == "admin"
+
+
+def test_alert_search_terms():
+    from app.features.expenses import alerts as A
+    assert A.imap_criteria(["a"]) == ["SUBJECT", '"a"']
+    assert A.imap_criteria(["a", "b", "c"]) == ["OR", "SUBJECT", '"a"', "OR", "SUBJECT", '"b"', "SUBJECT", '"c"']
