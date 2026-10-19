@@ -15,7 +15,10 @@ def test_health_conditions_and_format():
     assert not [k for k, f, _ in vh.conditions(m, _thresholds()) if f]           # healthy
     m.disk_used_pct, m.load15 = 91.0, 3.0
     firing = {k: d for k, f, d in vh.conditions(m, _thresholds()) if f}
-    assert set(firing) == {"disk", "load"} and "Disk 91% used" in firing["disk"]
+    assert set(firing) == {"disk", "load"} and "Disk 91% used" in firing["disk"]    # 🔴 replaces the 🟡 warning
+    m.disk_used_pct = 75.0
+    assert {k for k, f, _ in vh.conditions(m, _thresholds()) if f} == {"disk_warn", "load"}
+    m.disk_used_pct = 91.0
     m.oci = {"error": "not permitted — create the dynamic group + policy (README → VM health)"}
     text = vh.format_health(m, _thresholds())
     assert "🔴 Disk 91% of 30 GB" in text and "OCI: not permitted" in text and "Job" not in text

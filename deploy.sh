@@ -215,6 +215,9 @@ if [ "$healthy" != "1" ]; then
   exit 1
 fi
 docker image prune -f >/dev/null 2>&1 || true
+# Build cache grows with every deploy; keep the most recent 1.5 GB (the pip layer, so rebuilds stay fast).
+docker builder prune -f --max-used-space 1.5GB >/dev/null 2>&1 || true
+echo "disk: $(df -h / | awk 'NR==2 {print $5 " used, " $4 " free"}')"
 
 # Host watchdog: alerts the admin when the container itself is down (installed/updated idempotently).
 sudo install -m 755 deploy/watchdog.sh /usr/local/bin/nari-watchdog

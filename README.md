@@ -135,6 +135,7 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 ```
 
 - **Deploys** unpack into a fresh `~/nari` and keep the previous release as `~/nari.prev`. The server's `.env` and all data (in the `nari-data` volume) are kept.
+- **Disk:** container logs are capped (10 MB × 3) and app data is pruned nightly. Each deploy removes old images and trims Docker's build cache to 1.5 GB, which otherwise grows with every deploy, then prints disk usage.
 - **Backups** run weekly into the `nari-backups` volume (newest 8 kept), encrypted, and each deploy copies the newest one to `backups/` on your machine. See [Backups](#backups-encrypted) to restore.
 - **Run only one copy of the bot.** Two copies polling the same token make Telegram reject one ("Conflict"). `deploy.sh` warns if a local copy is running.
 
@@ -157,7 +158,7 @@ Every job run (scheduled or `/run`) is recorded with what it did, e.g. "new mail
 
 - **Job failed:** the last run had an error. 🟡 at first, 🔴 after 3 failed runs in a row.
 - **Missed run:** a scheduled time passed 30 minutes ago and the job never started (e.g. the scheduler silently dropped it).
-- **VM** (thresholds in `vm_health.thresholds`): 🔴 disk ≥ 85%, memory ≥ 90%, ≥ 3 crash restarts in 24h (deploys don't count), newest backup older than 9 days, OCI instance not running; 🟡 15-min load ≥ 2/core, swap ≥ 50%.
+- **VM** (thresholds in `vm_health.thresholds`): 🟡 disk ≥ 70%, 🔴 disk ≥ 85%, memory ≥ 90%, ≥ 3 crash restarts in 24h (deploys don't count), newest backup older than 9 days, OCI instance not running; 🟡 15-min load ≥ 2/core, swap ≥ 50%.
 
 The primary profile gets one message when an alarm fires (🚨/⚠️), escalates or recovers (✅), at any hour, plus one "still firing" reminder a day. Settings are under `monitoring:`. A failed job alarms right when the run ends rather than at the next check. Errors outside jobs (e.g. in a command) still send a direct message, at most once per 6h.
 

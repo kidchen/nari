@@ -156,6 +156,7 @@ vm_health:
   enabled: true
   oci: true                     # instance-principal OCI metrics; needs the dynamic group + policy (README)
   thresholds:
+    disk_warn_pct: 70           # 🟡 early warning (e.g. Docker build cache); 🔴 at disk_pct
     disk_pct: 85
     mem_pct: 90
     load_per_core: 2.0          # 15-minute load average per core

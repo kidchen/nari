@@ -170,13 +170,15 @@ def oci_metrics(timeout: float = 20) -> dict[str, Any]:
 
 # ---- alarms -------------------------------------------------------------------------------
 
-WARNING_ONLY = {"load", "swap"}     # 🟡: worth knowing, not urgent
+WARNING_ONLY = {"load", "swap", "disk_warn"}     # 🟡: worth knowing, not urgent
 
 
 def conditions(m: Metrics, t: dict[str, Any]) -> list[tuple[str, bool, str]]:
     """(alarm key, firing?, description) for every rule; firing state is compared with the last check."""
     out = [
         ("disk", m.disk_used_pct >= t["disk_pct"], f"Disk {m.disk_used_pct:.0f}% used (alarm ≥ {t['disk_pct']}%)"),
+        ("disk_warn", t.get("disk_warn_pct", 70) <= m.disk_used_pct < t["disk_pct"],
+         f"Disk {m.disk_used_pct:.0f}% used (warning ≥ {t.get('disk_warn_pct', 70)}%)"),
         ("memory", m.mem_used_pct >= t["mem_pct"], f"Memory {m.mem_used_pct:.0f}% used (alarm ≥ {t['mem_pct']}%)"),
         ("load", m.load15 / m.cores >= t["load_per_core"],
          f"Load {m.load15:.2f} (15-min) on {m.cores} core(s) (alarm ≥ {t['load_per_core']}/core)"),
