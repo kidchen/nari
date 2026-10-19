@@ -64,6 +64,47 @@ CREATE TABLE IF NOT EXISTS job_runs (
     error       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs(job, started);
+CREATE TABLE IF NOT EXISTS expense_statements (
+    id          TEXT PRIMARY KEY,      -- "<owner>:<bank>:<last4>:<period end>"
+    owner       TEXT NOT NULL,
+    bank        TEXT NOT NULL,
+    last4       TEXT NOT NULL,
+    start       TEXT,
+    end         TEXT NOT NULL,
+    previous    INTEGER NOT NULL,      -- cents
+    new         INTEGER NOT NULL,
+    imported    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS expense_txns (
+    id          TEXT PRIMARY KEY,      -- "<statement id>:<n>" (alerts later get their own ids)
+    owner       TEXT NOT NULL,
+    bank        TEXT NOT NULL,
+    last4       TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    amount      INTEGER NOT NULL,      -- cents; charges positive, payments/credits negative
+    description TEXT NOT NULL,
+    kind        TEXT NOT NULL,         -- purchase | credit | payment | fee | interest | cash_advance | balance_transfer
+    bank_category TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL,         -- statement | alert
+    statement   TEXT,
+    merchant    TEXT NOT NULL DEFAULT ''    -- grouping key (app/features/expenses/categories.py)
+);
+CREATE TABLE IF NOT EXISTS merchant_map (
+    owner       TEXT NOT NULL,         -- '' = shared (learned from banks / Gemini); <pid> = that person's fix
+    key         TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    source      TEXT NOT NULL,         -- user | bank | ai
+    updated     TEXT NOT NULL,
+    PRIMARY KEY (owner, key)
+);
+CREATE INDEX IF NOT EXISTS expense_txns_owner_date ON expense_txns(owner, date);
+CREATE TABLE IF NOT EXISTS merchant_names (
+    owner       TEXT NOT NULL,         -- the person who renamed it
+    key         TEXT NOT NULL,
+    display     TEXT NOT NULL,
+    PRIMARY KEY (owner, key)
+);
 CREATE TABLE IF NOT EXISTS kv (
     k           TEXT PRIMARY KEY,
     v           TEXT NOT NULL
@@ -83,11 +124,13 @@ class DB:
 
     def _migrate(self) -> None:
         """Add columns introduced after a table was created (CREATE TABLE IF NOT EXISTS won't)."""
-        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(biorxiv_history)")}
+        added = {"biorxiv_history": ("title", "url"), "expense_txns": ("merchant",)}
         with self.tx() as c:
-            for col in ("title", "url"):
-                if col not in cols:
-                    c.execute(f"ALTER TABLE biorxiv_history ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+            for table, new_cols in added.items():
+                cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                for col in new_cols:
+                    if col not in cols:
+                        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -238,6 +281,10 @@ class DB:
 
     def run_jobs(self) -> list[str]:
         return [r[0] for r in self._conn.execute("SELECT DISTINCT job FROM job_runs ORDER BY job")]
+
+    # ---- generic helpers for feature-owned tables -------------------------------------------
+    def rows(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
+        return self._conn.execute(sql, args).fetchall()
 
     def kv_like(self, pattern: str) -> list[tuple[str, str]]:
         return [(r[0], r[1]) for r in self._conn.execute("SELECT k, v FROM kv WHERE k LIKE ?", (pattern,))]

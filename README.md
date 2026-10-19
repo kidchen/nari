@@ -7,11 +7,12 @@ A Telegram bot for a household, run as one Docker container on a small VM. It se
 | `market` | **Morning brief:** what's moving your portfolio and watchlist today, and why, with sources. **Evening brief:** the close, what moved, and a 2-week look-ahead (key US data ⭐, your earnings, IPOs) | Mon–Fri 08:30 and 16:30 PT; holidays skipped |
 | `realestate` | Redfin saved-search alerts as photo messages linked to the real listing (new, price change, back on market); sold and suggested homes in one summary; weekly mortgage rates | Gmail checked every 2h, 7am–9pm, silent if nothing new; rates Thu 18:00 |
 | `cards` | This quarter's 5% categories for your rotating cards, activation status, next quarter's preview, and reminders | Read from your forwarded bank emails; plan on the 1st of each quarter; reminder on the 15th if not activated |
+| `expenses` | Card spending from statement PDFs (Chase, Discover, Bank of America, American Express): send a PDF, check the preview, tap Import. Each import must add up to the statement's own balances. Categories are learned (your fixes, common merchants, bank categories, then Gemini with names only). Reports include a category chart, changes vs earlier periods, top merchants, subscriptions (price increases flagged), a best-card check (quarterly/yearly) and short AI takeaways from category totals only. Reports say when a card's statement doesn't cover the whole period yet. *Planned:* daily updates from bank alert emails | Weekly Sat 08:00 (the 7 days to Friday), monthly on the 1st, quarterly on Jan/Apr/Jul/Oct 1st, year-end on Jan 2 |
 | `biorxiv` | New bioRxiv preprints matching your keywords and context terms, each summarized in 3 bullets (goal, method, finding). After 7 quiet days, a recap of the past 14 days: papers sent plus near misses (a keyword but no context term), or "nothing matched" | Your own cron, e.g. Mon–Fri 08:00 |
 | `placeholder` *(admin)* | Monthly parking placeholder image (watermarked, not a receipt) | 1st of the month, 08:00 |
 | `vmhealth` *(admin)* | `/health` on demand; alarms when disk, memory, load, backups or the OCI instance cross a threshold | Checked every 10 min |
 
-Everything personal is kept per person: lists, cards, activation status, paper keywords, deliveries and pauses. Only public data is shared: prices, news, calendars, 5% category lists and mortgage rates.
+Everything personal is kept per person: lists, cards, activation status, spending, merchant fixes, paper keywords, deliveries and pauses. Only public data is shared: prices, news, calendars, 5% category lists and mortgage rates.
 
 ---
 
@@ -25,10 +26,11 @@ Register once by sending `/start <INVITE_CODE>`, then tap your name. `/help` and
 | `/brief` | Market brief now. You get the morning version before the 1pm PT close and the evening version after. Add `morning`, `evening` or `fresh` (skips the 30-min cache). |
 | `/portfolio`, `/watch` | Show your lists; `add IBM KO` or `del KO` to change them. Tickers are checked against Yahoo. |
 | `/cards` | This quarter's 5% categories and activation status. `/cards dining` says which card to use. `/cards fix <card> A, B` is a rare manual correction. |
+| `/spend` | Your card spending for the last 30 days by category and merchant (`/spend 90` for 90). `/spend report week\|month\|quarter\|year [now]` sends a report now. `/spend subs` lists detected subscriptions. `/spend fix costco` corrects a category, `/spend name costco = Costco` renames a merchant (both remembered). `/spend inbox` re-offers saved statements. Send a statement PDF to import it. |
 | `/papers` | New papers now. `/papers topics` shows your keywords and context terms. `/papers add kw\|alt`, `/papers del 2`, `/papers context add …` and `/papers reset` edit them. |
 | `/status` *(admin)* | App status: firing alarms (and those resolved in 24h), every job's last run with what it did and its next run, people and their features, AI model health |
 | `/health` *(admin)* | VM and OCI health: disk, memory, load, uptime, restarts, backups |
-| `/run <job>` *(admin)* | Run a job now: `mail realestate cardmail mortgage market evening cards activation papers alarms cleanup backup placeholder` |
+| `/run <job>` *(admin)* | Run a job now: `mail realestate cardmail mortgage market evening cards activation spendcat spendweek spendmonth spendquarter spendyear papers alarms cleanup backup placeholder` |
 
 Older commands (`/pause`, `/resume`, `/best`, `/setcats`, `/topics`) still work and reply with their new form.
 
@@ -93,7 +95,8 @@ market:
    - `realestate`: nothing needed (optionally `profiles.<id>.real_estate` filters).
    - `cards`: add their cards to `cards.local.yaml` (see [Adding a card](#adding-a-card)), and set `email_from:` on their profile to the address they forward from.
    - `biorxiv`: add a `biorxiv:` block to their profile (keywords, optional context, schedule).
-3. **They do their part:** for `cards`, forward the bank's 5% emails to the bot's Gmail; for `realestate`, saved searches email the bot's Gmail.
+   - `expenses`: nothing needed. Adding their cards with `last4` (see [Adding a card](#adding-a-card)) gives card names in previews and enables the best-card check.
+3. **They do their part:** for `cards`, forward the bank's 5% emails to the bot's Gmail; for `realestate`, saved searches email the bot's Gmail; for `expenses`, send each statement PDF to the bot.
 4. **Deploy:** run `./deploy.sh`. Their "/" menu updates on restart.
 5. **Check:** run `/status` (People shows their features). They can send `/help` to confirm.
 
@@ -111,7 +114,9 @@ cards:
   my_discover:
     name: Discover it Cash Back
     owner: alex                       # profile id
-    rates: {other: 1}                 # fixed categories, e.g. {dining: 3, other: 1}
+    last4: ["1234"]                   # card ending(s) on statements (Amex: 5 digits); used by expenses
+    unit: "%"                         # or "x" for points (compared 1x ≈ 1%)
+    rates: {other: 1}                 # fixed categories, e.g. {dining: 3, grocery: 2, online shopping: 3, other: 1}
     rotating:                         # omit for non-rotating cards
       issuer: discover                # discover | chase — which bank's 5% emails apply
       rate: 5
@@ -130,11 +135,7 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 ```
 
 - **Deploys** unpack into a fresh `~/nari` and keep the previous release as `~/nari.prev`. The server's `.env` and all data (in the `nari-data` volume) are kept.
-- **Backups** run weekly into the `nari-backups` volume (newest 8 kept), and each deploy copies the newest one to `backups/` on your machine. To restore one:
-  ```bash
-  ssh opc@<vm-ip> 'cd ~/nari && docker compose stop nari && docker run --rm -v nari-data:/d -v nari-backups:/b \
-    --entrypoint sh nari:latest -c "cp /b/<backup>.db /d/nari.db" && docker compose start nari'
-  ```
+- **Backups** run weekly into the `nari-backups` volume (newest 8 kept), encrypted, and each deploy copies the newest one to `backups/` on your machine. See [Backups](#backups-encrypted) to restore.
 - **Run only one copy of the bot.** Two copies polling the same token make Telegram reject one ("Conflict"). `deploy.sh` warns if a local copy is running.
 
 ---
@@ -147,7 +148,8 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 - **bioRxiv:** uses the JSON API (not RSS, which only holds the latest 30 papers). Keeps new preprints (not revisions) that match a keyword and, if set, a context term. Ranked by keyword order; up to 12 are summarized and further matches are listed. Deduped per person.
 - **Gemini (free tier):** each task has an ordered model list (`llm.*_models`). A circuit breaker stored in the database skips a failing model: 503 errors cool it down for 15 min doubling up to 6h, 429 for 2 min, 404 for 7 days. After the cooldown it's probed and restored on success. If every model fails, you get plain headlines or abstracts instead.
 - **Gmail:** IMAP read-only with an app password, one login per 2-hourly check. Only Message-ID headers are fetched first; bodies are downloaded only for unseen mail. Nothing is ever marked read or moved.
-- **Storage:** one SQLite file of about 100 KB. Retention: Gmail IDs 180 days (always longer than the look-back), listings 180 days, alerts 30 days, sent papers 90 days, card quarters for the previous/current/next quarter, small caches 30 days. A nightly cleanup runs at 03:00, with VACUUM on Sundays.
+- **Expenses:** statement PDFs are parsed on the server from positioned words (pdfplumber), one layout per bank. An import is accepted only if previous balance + every parsed line = new balance, to the cent. The PDF is deleted after Import / Cancel; one that can't be parsed is kept 30 days. Merchant categories come from your fixes, a starter list of common US chains, the shared learned map, the bank's own category (Discover), then Gemini (merchant names only), and answers are remembered. Subscriptions are the same merchant with a steady amount, monthly or yearly. The best-card check compares each purchase's card with your best card for it (base rates + the quarter's 5% categories). Gemini sees only category totals for report takeaways.
+- **Storage:** one SQLite file. Retention: Gmail IDs 180 days (always longer than the look-back), listings 180 days, alerts 30 days, sent papers 90 days, card quarters for the previous/current/next quarter, job runs and small caches 30 days, unimported statement PDFs 30 days. Spending data and merchant fixes are kept (reports compare with earlier periods and years). A nightly cleanup runs at 03:00, with VACUUM on Sundays.
 
 ## Monitoring and alarms (admin only)
 
@@ -186,13 +188,16 @@ Tailscale (exit node) is untouched. Keep the OCI rule for UDP 41641 so phones in
 
 The weekly backups in the `nari-backups` volume, and the copy `deploy.sh` saves to `backups/`, are encrypted with [age](https://age-encryption.org).
 - The server has only the public key (`maintenance.backup_age_recipient` in `settings.local.yaml`), so it can write backups but not read them.
-- The private key is `~/.config/nari/backup-age-key.txt`, with a copy in your password manager. **Without it the backups can't be restored.**
+- The private key is `~/.config/nari/backup-age-key.txt`, with a copy in Apple Passwords (or another safe place off this machine). **Without it the backups can't be restored.**
 
-Restore:
-```
+Restore (stops the bot, replaces its database):
+```bash
 age -d -i ~/.config/nari/backup-age-key.txt -o nari.db backups/nari-YYYYMMDD.db.age
-sqlite3 nari.db "PRAGMA integrity_check"
-# then copy nari.db into the nari-data volume as /app/data/nari.db (bot stopped)
+sqlite3 nari.db "PRAGMA integrity_check"                     # must print: ok
+scp nari.db opc@<vm-ip>:/tmp/nari.db
+ssh opc@<vm-ip> 'cd ~/nari && docker compose stop nari && docker run --rm -v nari-data:/d -v /tmp/nari.db:/n.db:ro \
+  --entrypoint sh nari:latest -c "cp /n.db /d/nari.db" && docker compose start nari && rm /tmp/nari.db'
+rm nari.db
 ```
 
 ## Troubleshooting
@@ -205,6 +210,9 @@ sqlite3 nari.db "PRAGMA integrity_check"
 | 5% categories missing | The forwarded email may be in Gmail Spam, which is fine since Spam is checked. Make sure the forwarding rule matches "5%". `/run cardmail` checks now. |
 | Activation status not updating | The sender isn't linked to a person: set `email_from` on their profile. Discover never confirms, so tap ✅ instead. |
 | `/health` says OCI "not permitted" | Dynamic group or policy missing (see above). |
+| A statement says "Couldn't import" | "Unknown bank": only Chase, Discover, BoA and Amex layouts exist. "Doesn't add up": a line wasn't parsed (new layout?). The PDF stays on the server for 30 days so the parser can be fixed; then `/spend inbox` offers it again. |
+| Spending shows "Uncategorized" | Gemini was unavailable; it's retried daily at 04:15 and on `/spend`. Or fix it yourself: `/spend fix <merchant>`. |
+| A report says "⚠️ Partial" | A card's latest statement ends before the period does. Send the next statement. |
 
 ## Project layout
 
@@ -218,7 +226,7 @@ app/
   config.py db.py notify.py maintenance.py
   integrations/    gmail (IMAP), llm (Gemini + circuit breaker)
   features/        one package per feature: feature.py (FEATURE: commands, jobs, mail, ...) + its logic
-    market/  realestate/  cards/  biorxiv/  placeholder/  vmhealth/
+    market/  realestate/  cards/  expenses/  biorxiv/  placeholder/  vmhealth/
     __init__.py    ALL = [...]  ← the list of enabled features
 config/            public defaults (+ your git-ignored *.local.yaml)
 deploy.sh deploy/  deploy script, VM watchdog
@@ -231,7 +239,7 @@ tests/             one test file per feature, plus helpers.py
 1. Create `app/features/<name>/` containing your logic and a `feature.py` that defines `FEATURE = Feature(...)` (see `app/registry.py`):
    - `commands`: each one's name, a one-line description, `handler(bot, update, ctx)` and usage lines;
    - `jobs`: an id (also its `/run` name), `run(services, force=False)`, and a schedule read from settings;
-   - optional: `mail` (a Gmail search that shares the 2-hourly login), `profile_jobs` (per-person schedules), `ready(services, pid)` ("is it set up for this person?"), `on_startup`, `status_section`, `alarms` (async, returns `monitoring.Alarm`s checked every 10 min), `aliases`, `callbacks`, `admin_only`.
+   - optional: `mail` (a Gmail search that shares the 2-hourly login), `profile_jobs` (per-person schedules), `ready(services, pid)` ("is it set up for this person?"), `on_startup`, `status_section`, `alarms` (async, returns `monitoring.Alarm`s checked every 10 min), `documents` (files sent to the bot, by MIME type), `aliases`, `callbacks`, `admin_only`.
 2. Add it to `ALL` in `app/features/__init__.py`.
 3. Add its defaults to `config/settings.yaml`, then grant it to people in `features:`.
 
@@ -247,6 +255,8 @@ That's all. `/help`, the "/" menu, `/features`, `/run`, `/status`, the schedule 
 
 - [bioRxiv API](https://api.biorxiv.org/): ⚠️ External link, accessed 2026-10-15
 - [age encryption](https://age-encryption.org): ⚠️ External link, accessed 2026-10-18
+- [pdfplumber](https://github.com/jsvine/pdfplumber): ⚠️ External link, accessed 2026-10-18
+- Ideas for expenses (rules, subscriptions, duplicate matching, category chart), from [Actual Budget](https://github.com/actualbudget/actual) and its [API](https://actualbudget.org/docs/api/) and [bank sync](https://actualbudget.org/docs/advanced/bank-sync/) docs, [Firefly III](https://github.com/firefly-iii/firefly-iii), and [ExpenseOwl](https://github.com/Tanq16/ExpenseOwl): ⚠️ External links, accessed 2026-10-18
 - [FRED MORTGAGE30US](https://fred.stlouisfed.org/series/MORTGAGE30US): ⚠️ External link, accessed 2026-10-13
 - [python-telegram-bot](https://docs.python-telegram-bot.org/): ⚠️ External link, accessed 2026-10-13
 - [APScheduler 3.x CronTrigger](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html): ⚠️ External link, accessed 2026-10-13

@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app import maintenance, monitoring
 from app.access import catalog
@@ -58,6 +58,7 @@ class BotApp:
                 self.app.add_handler(CommandHandler(a.name, self._bind_alias(a.handler, a.name, a.hint)))
             for pattern, handler in f.callbacks:
                 self.app.add_handler(CallbackQueryHandler(self._bind(handler), pattern=pattern))
+        self.app.add_handler(MessageHandler(filters.Document.ALL, self.on_document))
         self.app.add_handler(CallbackQueryHandler(self.pick_profile, pattern=r"^reg:"))
         self.app.add_error_handler(self._on_error)
         self.app.add_handler(CallbackQueryHandler(self.toggle_feature, pattern=r"^feat:"))
@@ -220,6 +221,20 @@ class BotApp:
         await update.effective_chat.send_message(
             f"✅ Registered as <b>{html.escape(self.cfg.profiles[pid]['name'])}</b>.\n\n{self._help(pid)}",
             parse_mode=ParseMode.HTML)
+
+    async def on_document(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """A file sent to the bot goes to the first feature (ready for this person) that takes its type."""
+        import mimetypes
+        if not (pid := await self._profile(update)):
+            return
+        doc = update.effective_message.document
+        mime = doc.mime_type or mimetypes.guess_type(doc.file_name or "")[0] or ""
+        for f in self.services.features:
+            for kind, handler in f.documents:
+                if kind == mime and self._ready(pid, f):
+                    await handler(self, update, ctx)
+                    return
+        await self._reply(update, "I don't know what to do with that file.")
 
     async def help(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         pid = self.db.profile_for(update.effective_chat.id)

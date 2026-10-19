@@ -61,6 +61,7 @@ class Feature:
     commands: tuple[Command, ...] = ()
     aliases: tuple[Alias, ...] = ()
     callbacks: tuple[tuple[str, Handler], ...] = ()                       # (callback_data regex, handler)
+    documents: tuple[tuple[str, Handler], ...] = ()                       # (MIME type, handler) for files sent to the bot
     jobs: tuple[Job, ...] = ()
     profile_jobs: Callable[[Services], list[tuple[str, JobFn, dict, Schedule]]] | None = None  # per person
     mail: MailQuery | None = None

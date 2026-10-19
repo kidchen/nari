@@ -7,6 +7,7 @@ Retention (nightly):
   re_events          30 days    — real-estate alerts, delivered per person (deliveries table follows)
   quarter state      keep previous, current and next quarter (5% categories, /setcats, activations)
   err_alert / llm    30 days
+  statement PDFs     30 days    — data/statements/inbox (files, not DB rows)
   job_runs           30 days    — the job ledger behind /status and the job alarms
   ticker info cache  30 days    — refetched from Yahoo after expiry
 Backups (weekly): sqlite online-backup into BACKUP_DIR, newest N kept.
@@ -73,6 +74,8 @@ def prune(db: DB, today: date | None = None, now: float | None = None) -> dict[s
         out["listings"] = c.execute("DELETE FROM listings WHERE last_seen < ?", (iso(LISTING_RETENTION_DAYS),)).rowcount
         out["biorxiv"] = c.execute("DELETE FROM biorxiv_history WHERE sent < ?", (iso(BIORXIV_RETENTION_DAYS),)).rowcount
         out["re_events"] = c.execute("DELETE FROM re_events WHERE created < ?", (iso(SHORT_RETENTION_DAYS),)).rowcount
+        out["statements"] = _prune_files(Path(db.path).parent / "statements", now - SHORT_RETENTION_DAYS * 86400) \
+            if db.path != ":memory:" else 0
         out["job_runs"] = c.execute("DELETE FROM job_runs WHERE started < ?", (now - SHORT_RETENTION_DAYS * 86400,)).rowcount
         out["deliveries"] = c.execute("DELETE FROM deliveries WHERE event_id NOT IN (SELECT id FROM re_events)").rowcount
         stale_quarters = []
@@ -94,6 +97,15 @@ def prune(db: DB, today: date | None = None, now: float | None = None) -> dict[s
             out["llm_models"] = len(state) - len(keep)
             c.execute("UPDATE kv SET v=? WHERE k='llm_health'", (json.dumps(keep),))
     return out
+
+
+def _prune_files(root: Path, cutoff: float) -> int:
+    n = 0
+    for f in root.rglob("*") if root.exists() else []:
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            f.unlink()
+            n += 1
+    return n
 
 
 def one_time_cleanup(db: DB) -> dict[str, int]:

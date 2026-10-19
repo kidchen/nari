@@ -142,7 +142,7 @@ def test_prune_retention_rules(tmp_path):
     db.set_kv("tick:NEW", json.dumps({"name": "n", "type": "EQUITY", "ts": now}))
     db.set_kv("llm_health", json.dumps({"gone": {"last_ok": now - 40 * 86400}, "live": {"last_ok": now}}))
     out = mt.prune(db, today=date(2026, 11, 1), now=now)
-    assert out == {"emails": 1, "listings": 1, "biorxiv": 0, "re_events": 0, "job_runs": 0, "deliveries": 0, "quarters": 2, "err_alerts": 1,
+    assert out == {"emails": 1, "listings": 1, "biorxiv": 0, "re_events": 0, "statements": 0, "job_runs": 0, "deliveries": 0, "quarters": 2, "err_alerts": 1,
                    "ticker_info": 1, "llm_models": 1}
     keys = {k for k, _ in db.kv_like("%")}
     assert {"rotq:chase:2026Q3", "rotq:chase:2026Q4", "rotq:chase:2027Q1", "rotating:disc:2026Q3"} <= keys  # prev/cur/next

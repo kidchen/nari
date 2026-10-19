@@ -10,7 +10,8 @@ cards:
   example_card:
     name: Example Rotating Cash Back
     owner: me
-    unit: "%"
+    last4: ["1234"]               # card ending on statements (Amex: 5 digits): names + best-card check in expenses
+    unit: "%"                     # or "x" for points
     rates:
       other: 1
     rotating:

@@ -14,7 +14,8 @@ def test_names_unique_and_schedules_parse(tmp_path, monkeypatch):
     assert len({f.name for f in ALL}) == len(ALL)
     jobs = b.services.jobs()
     assert {"mail", "cleanup", "backup", "market", "evening", "mortgage", "realestate", "cards", "cardmail",
-            "activation", "papers", "alarms", "placeholder"} == set(jobs)
+            "activation", "papers", "alarms", "placeholder", "spendcat", "spendweek", "spendmonth",
+            "spendquarter", "spendyear"} == set(jobs)
     for _fn, spec in jobs.values():
         if spec:
             (CronTrigger.from_crontab(spec) if isinstance(spec, str) else CronTrigger(**spec))  # must not raise

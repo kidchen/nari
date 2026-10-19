@@ -7,7 +7,7 @@
 timezone: America/Los_Angeles
 
 # People who can register with the bot: /start <INVITE_CODE>, then tap your name.
-# features: what each person may get — "all" or a list of: market, realestate, cards, biorxiv, placeholder, vmhealth.
+# features: what each person may get — "all" or a list of: market, realestate, cards, expenses, biorxiv, placeholder, vmhealth.
 # Admin-only features (placeholder) are only ever given to the primary profile.
 # Within that, people pause/resume their own features in the bot (/features, /pause, /resume).
 profiles:
@@ -132,6 +132,15 @@ maintenance:
   backup_schedule: {day_of_week: sun, hour: 3, minute: 30}    # weekly SQLite backup into the nari-backups volume
   backup_keep: 8
   backup_age_recipient:         # age PUBLIC key (age1…); set in settings.local.yaml. Unset = plaintext backups
+
+# Expenses (per person): spending reports from imported statements (and alert emails, later).
+expenses:
+  reports: true
+  weekly_schedule: {day_of_week: sat, hour: 8, minute: 0}           # the 7 days ending Friday
+  monthly_schedule: {day: 1, hour: 8, minute: 5}                    # last month; marked partial until statements arrive
+  # quarterly: 1st of Jan/Apr/Jul/Oct for the quarter before; yearly: Jan 2 for the year before
+  quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 8, minute: 10}
+  yearly_schedule: {month: 1, day: 2, hour: 9, minute: 0}
 
 # Monitoring (app/monitoring.py): every job run is recorded; the primary profile gets a message when an
 # alarm fires or recovers (any hour) and a daily reminder while one keeps firing. /status shows it all.
