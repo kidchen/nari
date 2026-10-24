@@ -79,3 +79,12 @@ def test_scheduled_mail_job_really_runs(tmp_path, monkeypatch):
     assert inspect.iscoroutinefunction(fn)
     asyncio.run(fn(b.services))
     assert calls == [False]
+
+
+def test_help_usage_lines_share_one_format():
+    """/help lines are '<example> — <what it does>', one example per line (no '·'-joined pairs)."""
+    from app.features import ALL
+    for f in ALL:
+        for c in f.commands:
+            for u in c.usage:
+                assert " — " in u and "·" not in u, f"/{c.name} usage line breaks the /help format: {u!r}"

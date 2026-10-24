@@ -161,7 +161,7 @@ FEATURE = Feature(
     description="Morning + evening market briefs (/brief, /portfolio, /watch)",
     commands=(
         Command("brief", "Market brief now: today before the close, close + look-ahead after", cmd_brief,
-                ("/brief morning · /brief evening — pick one", "/brief fresh — skip the 30-min cache")),
+                ("/brief morning — the morning version", "/brief evening — the evening version", "/brief fresh — skip the 30-min cache")),
         Command("portfolio", "Your portfolio", cmd_portfolio, ("/portfolio add IBM KO — add", "/portfolio del KO — remove")),
         Command("watch", "Your watchlist", cmd_watch, ("/watch add XOM — add", "/watch del XOM — remove")),
     ),
