@@ -109,18 +109,62 @@ def totals(db: DB, owner: str, p: Period) -> Totals:
     return t
 
 
-BANK_LABEL = {"boa": "BoA", "chase": "Chase", "discover": "Discover"}
+BANK_LABEL = {"boa": "BoA", "chase": "Chase", "discover": "Discover", "amex": "Amex"}
 
 
-def coverage(db: DB, owner: str, p: Period) -> list[str]:
-    """Cards whose data doesn't reach the end of the period yet (statements end on their closing date)."""
+ALERT_SILENT_DAYS = 30        # a card that usually sends alerts and then goes quiet this long: check its setting
+ALERT_HABIT = 3               # ... "usually" = at least this many alerts in the 60 days before the silence
+
+
+def card_data(db: DB, owner: str) -> dict[tuple[str, str], dict]:
+    """Per card: latest statement end + its closing balance, alert dates."""
+    cards: dict[tuple[str, str], dict] = {}
+    for r in db.rows("SELECT bank, last4, end, new FROM expense_statements s WHERE owner=? AND end = "
+                     "(SELECT max(end) FROM expense_statements t WHERE t.owner=s.owner AND t.bank=s.bank AND t.last4=s.last4)",
+                     (owner,)):
+        cards[(r["bank"], r["last4"])] = {"stmt": r["end"], "balance": r["new"], "alerts": []}
+    for r in db.rows("SELECT bank, last4, date FROM expense_txns WHERE owner=? AND source='alert' ORDER BY date", (owner,)):
+        cards.setdefault((r["bank"], r["last4"]), {"alerts": []})["alerts"].append(date.fromisoformat(r["date"]))
+    return cards
+
+
+def label(bank: str, last4: str) -> str:
+    return f"{BANK_LABEL.get(bank, bank)} ··{last4}"
+
+
+def notes(db: DB, owner: str, p: Period, today: date) -> list[str]:
+    """Statements are optional: alerts are the main source. Flags only what needs attention:
+    alerts that stopped on a card that usually sends them, and (monthly and longer) cards with no alerts,
+    whose spending after their last statement isn't counted. Idle cards ($0 last statement) are skipped."""
+    silent, uncounted = [], []
+    for (bank, last4), c in sorted(card_data(db, owner).items()):
+        alerts = c["alerts"]
+        if alerts:
+            last = alerts[-1]
+            habit = [d for d in alerts if last - timedelta(days=60) <= d <= last]
+            if (today - last).days >= ALERT_SILENT_DAYS and len(habit) >= ALERT_HABIT:
+                silent.append(f"{label(bank, last4)} since {last:%b %d}")
+        elif c.get("stmt") and c["stmt"] < p.end.isoformat() and c.get("balance") != 0:
+            uncounted.append(label(bank, last4))
     out = []
-    for r in db.rows("SELECT bank, last4, max(end) AS end FROM expense_statements WHERE owner=? GROUP BY bank, last4", (owner,)):
-        alert = db.rows("SELECT max(date) d FROM expense_txns WHERE owner=? AND bank=? AND last4=? AND source='alert'",
-                        (owner, r["bank"], r["last4"]))[0]["d"]
-        through = max(r["end"], alert or "")
-        if through < p.end.isoformat():
-            out.append(f"{BANK_LABEL.get(r['bank'], r['bank'])} ··{r['last4']} through {date.fromisoformat(through):%b %d}")
+    if silent:
+        out.append(f"⚠️ No alerts from {_esc(', '.join(silent))}. Check that card's alert setting.")
+    if uncounted and p.kind != "week":
+        out.append(f"<i>Not counted after their last statement (no alerts): {_esc(', '.join(uncounted))}.</i>")
+    if any(r["source"] == "alert" for r in store.spending(db, owner, p.start, p.end)):
+        out.append("<i>From card alerts: tips and refunds may be missing until a statement is imported.</i>")
+    return out
+
+
+def stale_statements(db: DB, owner: str, today: date, months: int = 3) -> list[str]:
+    """Cards still in use (alerts in the last 90 days, or a statement with a balance) whose newest statement
+    is older than `months` (or that never had one). For the statement reminder."""
+    cutoff = today - timedelta(days=30 * months)
+    out = []
+    for (bank, last4), c in sorted(card_data(db, owner).items()):
+        in_use = any(d >= cutoff for d in c["alerts"]) or (c.get("stmt") and c.get("balance") != 0)
+        if in_use and (c.get("stmt") or "") < cutoff.isoformat():
+            out.append(label(bank, last4))
     return out
 
 
@@ -287,9 +331,8 @@ def _sub_lines(db: DB, owner: str, subs: list[recurring.Subscription], p: Period
     return lines
 
 
-def _data_line(db: DB, owner: str, p: Period) -> list[str]:
-    partial = coverage(db, owner, p)
-    return [f"<i>⚠️ Partial: {_esc('; '.join(partial))}. Send the next statement to complete it.</i>"] if partial else []
+def _data_line(db: DB, owner: str, p: Period, today: date) -> list[str]:
+    return notes(db, owner, p, today)
 
 
 def build(db: DB, owner: str, kind: str, today: date, cards_cfg: dict | None = None, llm=None,
@@ -299,7 +342,8 @@ def build(db: DB, owner: str, kind: str, today: date, cards_cfg: dict | None = N
     if not cur.count:
         latest = db.rows("SELECT max(end) e FROM expense_statements WHERE owner=?", (owner,))[0]["e"]
         hint = f" Latest statement ends {date.fromisoformat(latest):%b %d}." if latest else " Send a statement PDF to start."
-        return Report(f"💳 <b>{p.label}</b>: no card activity recorded.{hint}", empty=True)
+        return Report("\n".join([f"💳 <b>{p.label}</b>: no card activity recorded.{hint}"] + _data_line(db, owner, p, today)),
+                      empty=True)
     prev = totals(db, owner, p.previous())
     head = f"<b>{p.label}</b> · <b>{money(cur.total)}</b> ({cur.count} items)"
     if kind == "week":
@@ -308,7 +352,7 @@ def build(db: DB, owner: str, kind: str, today: date, cards_cfg: dict | None = N
                  "Top: " + " · ".join(f"{_esc(c)} {money(v, cents=False)}" for c, v in list(cur.by_category.items())[:3]),
                  "Biggest: " + " · ".join(f"{_esc(C.display_name(db, owner, r['merchant']))} {money(r['amount'])} "
                                           f"({date.fromisoformat(r['date']):%a})" for r in biggest)]
-        return Report("\n".join(lines + _data_line(db, owner, p)))
+        return Report("\n".join(lines + _data_line(db, owner, p, today)))
     # month / quarter / year
     avg_periods = [prev] + [totals(db, owner, x) for x in _earlier(p, 2)]
     with_data = [t for t in avg_periods if t.count]
@@ -339,7 +383,7 @@ def build(db: DB, owner: str, kind: str, today: date, cards_cfg: dict | None = N
                                                   f"({date.fromisoformat(r['date']):%b %d})" for r in big]
     if note := commentary(llm, p.label, cur, prev if prev.count else None, avg, subs):
         lines += ["", "<b>Takeaways</b>", _esc(note)]
-    if data := _data_line(db, owner, p):
+    if data := _data_line(db, owner, p, today):
         lines += [""] + data
     return Report("\n".join(lines).strip(), chart(f"{p.label} · by category", cur.by_category, cur.total),
                   f"{icon} {p.label} · {money(cur.total)}")

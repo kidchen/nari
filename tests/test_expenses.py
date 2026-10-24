@@ -328,20 +328,86 @@ def test_monthly_report_compares_lists_subs_and_charts(tmp_path, monkeypatch):
     assert "<b>Takeaways</b>" in t and "Groceries jumped" in t
     assert "SAFEWAY" not in asked[0] and "Groceries: 480" in asked[0]           # aggregated numbers only
     assert rep.chart.startswith(b"\x89PNG") and rep.caption == "🧾 September 2026 · $557.99"
-    assert "Partial" not in t                                                   # statement covers September
+    assert "Not complete" not in t                                              # statement covers September
 
 
-def test_week_report_partial_and_empty(tmp_path, monkeypatch):
+def _alert_rows(db, dates, last4="1111", owner="admin"):
+    with db.tx() as c:
+        c.executemany("INSERT INTO expense_txns(id, owner, bank, last4, date, amount, description, kind, bank_category, "
+                      "category, source, merchant) VALUES (?,?,?,?,?,?,?,'purchase','','Other','alert','X')",
+                      [(f"al{last4}{d}", owner, "chase", last4, d, 100, "X") for d in dates])
+
+
+def test_week_report_and_notes(tmp_path, monkeypatch):
     from app.features.expenses import reports as R
     b, _ = _bot(tmp_path, monkeypatch)
     _seed_txns(b.db, [("2026-10-13", 2500, "SHELL 99", "purchase", "Gas", "SHELL")], owner="admin")
     with b.db.tx() as c:
-        c.execute("INSERT INTO expense_statements VALUES ('s1','admin','chase','1111','2026-09-15','2026-10-14',0,0,'x')")
-    t = R.build(b.db, "admin", "week", date(2026, 10, 17)).text      # Saturday
+        c.execute("INSERT INTO expense_statements VALUES ('s1','admin','chase','1111','2026-09-15','2026-10-14',0,5000,'x')")
+    t = R.build(b.db, "admin", "week", date(2026, 10, 17)).text      # Saturday; statement-based week
     assert t.startswith("📅 <b>Week of Oct 10–Oct 16</b> · <b>$25.00</b> (1 items)") and "Shell $25.00 (Tue)" in t
-    assert "⚠️ Partial: Chase ··1111 through Oct 14" in t
+    assert "⚠️" not in t and "From card alerts" not in t                # no statement warnings at all
+    month = R.build(b.db, "admin", "month", date(2026, 11, 1), {}).text  # no alerts on that card -> not counted later
+    assert "Not counted after their last statement (no alerts): Chase ··1111." in month
+    with b.db.tx() as c:                                                 # idle card ($0 balance): not listed
+        c.execute("UPDATE expense_statements SET new=0")
+    assert "Not counted" not in R.build(b.db, "admin", "month", date(2026, 11, 1), {}).text
     empty = R.build(b.db, "admin", "week", date(2026, 11, 2))
     assert empty.empty and "no card activity recorded. Latest statement ends Oct 14." in empty.text
+
+
+def test_alert_notes_footer_and_silent_card(tmp_path, monkeypatch):
+    from app.features.expenses import reports as R
+    b, _ = _bot(tmp_path, monkeypatch)
+    _alert_rows(b.db, ["2026-08-20", "2026-09-01", "2026-09-10", "2026-09-20"])          # a habit, then silence
+    _alert_rows(b.db, ["2026-10-20"], last4="2222")                                     # one alert: no habit
+    lines = R.notes(b.db, "admin", R.period("week", date(2026, 10, 24)), date(2026, 10, 24))
+    assert lines == ["⚠️ No alerts from Chase ··1111 since Sep 20. Check that card's alert setting.",
+                     "<i>From card alerts: tips and refunds may be missing until a statement is imported.</i>"]
+    early = R.notes(b.db, "admin", R.period("week", date(2026, 9, 26)), date(2026, 9, 26))
+    assert not any("No alerts" in x for x in early)                                    # only 6 days quiet then
+
+
+def test_statement_reminder_and_skip(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from helpers import _RecNotifier
+
+    from app.features.expenses import feature as F
+    b, _ = _bot(tmp_path, monkeypatch)
+    s = b.services
+    s.n = _RecNotifier(s.db)
+    today = [date(2026, 10, 24)]
+    monkeypatch.setattr(s, "today", lambda: today[0])
+    with s.db.tx() as c:
+        c.execute("INSERT INTO expense_statements VALUES ('s1','admin','chase','1111','2026-06-01','2026-06-30',0,5000,"
+                  "'2026-07-05T10:00:00+00:00')")
+    _alert_rows(s.db, ["2026-10-20"], last4="1111")
+    _alert_rows(s.db, ["2026-10-21"], last4="3333")                                      # alerts only, never a statement
+    asyncio.run(F.run_statement_reminder(s))
+    assert s.n.sent == [("admin", "🧾 <b>Statements, optional</b>: none imported for 3 months for Chase ··1111, Chase ··3333. "
+                                  "Sending them corrects tips and adds refunds; card alerts keep reports going either way.")]
+    asyncio.run(F.run_statement_reminder(s))
+    assert len(s.n.sent) == 1                                                            # not again the next day
+    today[0] += timedelta(days=15)
+    asyncio.run(F.run_statement_reminder(s))
+    assert len(s.n.sent) == 2                                                            # no answer: again after 2 weeks
+    out = []
+    q = SimpleNamespace(data="exp:skip:admin", message=SimpleNamespace(text_html="reminder"))
+
+    async def answer(*a, **k):
+        out.append(("answer", a))
+
+    async def edit(text, **k):
+        out.append((text, None))
+    q.answer, q.edit_message_text = answer, edit
+    asyncio.run(F.on_skip_button(b, SimpleNamespace(effective_chat=SimpleNamespace(id=1), callback_query=q), None))
+    assert "Skipped. Next reminder around Feb 06" in out[-1][0]
+    today[0] += timedelta(days=60)
+    asyncio.run(F.run_statement_reminder(s))
+    assert len(s.n.sent) == 2                                                            # skipped for 3 months
+    asyncio.run(F.on_skip_button(b, SimpleNamespace(effective_chat=SimpleNamespace(id=2), callback_query=q), None))
+    assert out[-1] == ("answer", ("Not yours.",))
 
 
 def test_best_card_check(tmp_path, monkeypatch):
@@ -468,3 +534,25 @@ def test_alert_search_terms():
     from app.features.expenses import alerts as A
     assert A.imap_criteria(["a"]) == ["SUBJECT", '"a"']
     assert A.imap_criteria(["a", "b", "c"]) == ["OR", "SUBJECT", '"a"', "OR", "SUBJECT", '"b"', "SUBJECT", '"c"']
+
+
+CHASE_ALERT = """<html><body><table><tr><td>This transaction is above the level you set, see more here.</td></tr>
+<tr><td>Transaction alert</td></tr><tr><td>You made a $28.37 transaction</td></tr>
+<tr><td>Account</td></tr><tr><td>Chase Freedom Visa (...8765)</td></tr>
+<tr><td>Date</td></tr><tr><td>Oct 24, 2026 at 2:54 PM ET</td></tr>
+<tr><td>Merchant</td></tr><tr><td>Blue Door Cafe LLC</td></tr>
+<tr><td>Amount</td></tr><tr><td>$28.37</td></tr>
+<tr><td>If you didn't make this purchase, visit chase.com/alerts.</td></tr>
+<tr><td>© 2026 JPMorgan Chase &amp; Co.</td></tr></table></body></html>"""
+
+
+def test_chase_alert_direct_and_forwarded():
+    from app.features.expenses import alerts as A
+    a = A.parse(CHASE_ALERT)
+    assert a == A.Alert("chase", "8765", "Chase Freedom Visa", date(2026, 10, 24), 2837, "Blue Door Cafe LLC")
+    fwd = ("<div>From: Someone &lt;me@example.com&gt;<br>Sent: Saturday, October 24, 2026<br>"
+           "Subject: You made a $28.37 transaction with Blue Door Cafe LLC</div>" + CHASE_ALERT)
+    assert A.parse(fwd) == a
+    assert A.parse(CHASE_ALERT.replace("Transaction alert", "Payment alert")) is None        # not a charge
+    assert A.parse(BOA_ALERT).bank == "boa"                    # BoA's "purchase" text isn't mistaken for Chase
+    assert A.imap_criteria(A.SUBJECTS) == ["OR", "SUBJECT", '"transaction exceeds alert limit"', "SUBJECT", '"transaction with"']

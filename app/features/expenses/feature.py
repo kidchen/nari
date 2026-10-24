@@ -178,6 +178,55 @@ def _report_job(kind: str):
     return run
 
 
+# ---- statement reminder (statements are optional; alerts are the main source) -----------------------
+
+REMIND_EVERY_DAYS = 90        # after the last statement import (or a Skip)
+RENAG_DAYS = 14               # no answer: remind again after this long
+
+
+def last_import(s, pid: str) -> str | None:
+    return s.db.rows("SELECT max(imported) i FROM expense_statements WHERE owner=?", (pid,))[0]["i"]
+
+
+def reminder_due(s, pid: str, today) -> bool:
+    if until := s.db.get_kv(f"exp:remind:{pid}"):
+        if today.isoformat() < until:
+            return False
+    start = last_import(s, pid) or s.db.registered_at(pid) or ""
+    return bool(start) and (today - datetime.fromisoformat(start).date()).days >= REMIND_EVERY_DAYS
+
+
+async def run_statement_reminder(s, force: bool = False) -> None:
+    """Daily: once 3 months passed since someone's last statement import, one reminder listing the cards
+    in use whose statements are older; [Skip 3 months] (or any import) resets it."""
+    today = s.today()
+    for pid in s.access.recipients("expenses"):
+        if not s.db.chat_ids_for([pid]) or not _has_data(s, pid) or not (force or reminder_due(s, pid, today)):
+            continue
+        cards = reports.stale_statements(s.db, pid, today)
+        if not cards:
+            continue
+        s.db.set_kv(f"exp:remind:{pid}", (today + timedelta(days=RENAG_DAYS)).isoformat())
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip 3 months", callback_data=f"exp:skip:{pid}")]])
+        await s.send_isolated(pid, "🧾 <b>Statements, optional</b>: none imported for 3 months for "
+                              f"{_esc(', '.join(cards))}. Sending them corrects tips and adds refunds; "
+                              "card alerts keep reports going either way.", kb)
+        monitoring.note(f"{pid}: statement reminder")
+
+
+async def on_skip_button(bot, update, ctx) -> None:
+    q = update.callback_query
+    s = bot.services
+    pid = s.db.profile_for(update.effective_chat.id)
+    if q.data.split(":", 2)[2] != pid:
+        await q.answer("Not yours.", show_alert=True)
+        return
+    until = s.today() + timedelta(days=REMIND_EVERY_DAYS)
+    s.db.set_kv(f"exp:remind:{pid}", until.isoformat())
+    await q.answer()
+    await q.edit_message_text(q.message.text_html + f"\n\n⏭️ Skipped. Next reminder around {until:%b %d}.", parse_mode="HTML")
+
+
 def _sched(key: str, default: dict):
     return lambda st: (st.get("expenses") or {}).get(key, default) if (st.get("expenses") or {}).get("reports", True) else None
 
@@ -391,13 +440,14 @@ FEATURE = Feature(
                        "/spend report week|month|quarter|year [now]",
                        "/spend fix costco — correct a category · /spend name costco = Costco",
                        "/spend inbox — import saved statements · send a statement PDF to import it")),),
-    callbacks=((r"^exp:(imp|no):", on_button), (r"^exp:(fm|fc):", on_fix_button)),
+    callbacks=((r"^exp:(imp|no):", on_button), (r"^exp:(fm|fc):", on_fix_button), (r"^exp:skip:", on_skip_button)),
     mail=MailQuery(criteria=lambda st: alerts.imap_criteria(alerts.SUBJECTS),
                    lookback_days=lambda st: _alerts_cfg(st)["lookback_days"],
                    mailboxes=lambda st: tuple(_alerts_cfg(st)["mailboxes"]),
                    handle=handle_mail),
     jobs=(Job("spendcat", run_categorize, lambda st: {"hour": 4, "minute": 15}),
           Job("spendmail", run_alert_check),
+          Job("spendremind", run_statement_reminder, _sched("statement_reminder_schedule", {"hour": 9, "minute": 30})),
           Job("spendweek", _report_job("week"), _sched("weekly_schedule", {"day_of_week": "sat", "hour": 8, "minute": 0})),
           Job("spendmonth", _report_job("month"), _sched("monthly_schedule", {"day": 1, "hour": 8, "minute": 5})),
           Job("spendquarter", _report_job("quarter"),

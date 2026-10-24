@@ -141,6 +141,7 @@ expenses:
   # quarterly: 1st of Jan/Apr/Jul/Oct for the quarter before; yearly: Jan 2 for the year before
   quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 8, minute: 10}
   yearly_schedule: {month: 1, day: 2, hour: 9, minute: 0}
+  statement_reminder_schedule: {hour: 9, minute: 30}   # daily check; reminds 3 months after the last import
   alerts:                       # bank transaction alert emails, read in the shared 2-hourly Gmail check
     lookback_days: 14           # direct to the bot's Gmail, or forwarded (forwards often land in Spam)
     mailboxes: [INBOX, "[Gmail]/Spam"]
