@@ -598,7 +598,7 @@ def test_discover_by_capital_one_alert():
 def test_admin_sees_someone_elses_spending(tmp_path, monkeypatch):
     b, _ = _bot(tmp_path, monkeypatch)
     b.cfg.profiles["sci"]["features"] = ["realestate", "biorxiv", "expenses"]
-    _seed_txns(b.db, [(str(date.today()), 4200, "SAFEWAY #1", "purchase", "Groceries", "SAFEWAY")], owner="sci")
+    _seed_txns(b.db, [(str(b.services.today()), 4200, "SAFEWAY #1", "purchase", "Groceries", "SAFEWAY")], owner="sci")   # bot time, not machine time
     out = []
     _call(b, asyncio, _cmd(b, "spend"), 1, "/spend sci", out)                     # admin -> sci's data
     assert out[-1][0].startswith("<b>Sci</b> · 💳 <b>Spending</b>") and "Safeway: $42.00" in out[-1][0]
