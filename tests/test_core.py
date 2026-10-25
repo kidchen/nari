@@ -206,3 +206,23 @@ def test_backups_are_age_encrypted_and_old_ones_converted(tmp_path):
     subprocess.run(["age", "-d", "-i", str(key), "-o", str(plain), str(new)], check=True)
     assert DB(plain).get_kv("hello") == "world"
     assert sorted(p.name.endswith(".age") for p in bk.iterdir()) == [True, True]
+
+
+def test_model_usage_stats_per_day():
+    from app.integrations import llm
+    clock = _FakeClock()
+    db = DB(":memory:")
+    h = llm.ModelHealth(db.get_kv, db.set_kv, clock=clock)
+    for _ in range(3):
+        h.record_ok("m")
+    h.record_fail("m", 503)
+    h.record_ok("m")
+    assert h.stats("m") == {"ok": 4, "503": 1}
+    assert "m: healthy" in h.summary()[0] and "7d: 4/5 ok (1× 503)" in h.summary()[0]
+    clock.t += 8 * 86400                                     # a week later: outside the 7-day window
+    h.record_ok("m")
+    assert h.stats("m") == {"ok": 1}
+    clock.t += 40 * 86400
+    h.record_ok("m")
+    assert list(llm.ModelHealth(db.get_kv, db.set_kv, clock=clock).state["m"]["days"]) == [
+        __import__("datetime").date.fromtimestamp(clock.t).isoformat()]          # older days dropped, persisted

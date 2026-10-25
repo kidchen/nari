@@ -48,9 +48,10 @@ llm:
   # for the digest, so RPM isn't a constraint there; 429s fall through to the next model anyway.
   models: [gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.1-flash-lite]          # market catalysts
   extraction_models: [gemini-3.5-flash-lite, gemini-3.1-flash-lite, gemini-3.6-flash]  # Redfin email fallback (bursty)
-  # Morning brief: quality matters and it runs ~once per person per day, so retry the stronger models
-  # through 503 "high demand" spikes before falling back to lite.
-  brief_models: [gemini-3.6-flash, gemini-3.5-flash, gemini-3.5-flash-lite]
+  # Morning brief: quality matters and it runs ~once per person per day, so retry the strongest model
+  # through 503 "high demand" spikes, then the reliable lite one. (Oct 2026 review: 3.5-flash failed
+  # 5× in a row with 503s while 3.5-flash-lite kept answering, so it moved to last.)
+  brief_models: [gemini-3.6-flash, gemini-3.5-flash-lite, gemini-3.5-flash]
   brief_attempts_per_model: 3
   brief_backoff_seconds: 20
   timeout_seconds: 45

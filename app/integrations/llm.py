@@ -48,9 +48,34 @@ class ModelHealth:
         cooling = sorted((m for m in models if self.cooling(m)), key=lambda m: self.state[m]["until"])
         return healthy + cooling
 
+    STATS_DAYS = 30
+
+    def _count(self, s: dict, outcome: str) -> None:
+        """Per-day tallies ('ok' or the error code) for usage review; only the last 30 days are kept."""
+        from datetime import date, timedelta
+        today = date.fromtimestamp(self.clock())
+        days = s.setdefault("days", {})
+        day = days.setdefault(today.isoformat(), {})
+        day[outcome] = day.get(outcome, 0) + 1
+        cutoff = (today - timedelta(days=self.STATS_DAYS)).isoformat()
+        for d in [d for d in days if d < cutoff]:
+            del days[d]
+
+    def stats(self, model: str, days: int = 7) -> dict[str, int]:
+        from datetime import date, timedelta
+        cutoff = (date.fromtimestamp(self.clock()) - timedelta(days=days - 1)).isoformat()
+        out: dict[str, int] = {}
+        for d, counts in self.state.get(model, {}).get("days", {}).items():
+            if d >= cutoff:
+                for k, v in counts.items():
+                    out[k] = out.get(k, 0) + v
+        return out
+
     def record_ok(self, model: str) -> None:
         with self._lock:
-            self.state.setdefault(model, {}).update(fails=0, until=0, last_ok=int(self.clock()))
+            s = self.state.setdefault(model, {})
+            s.update(fails=0, until=0, last_ok=int(self.clock()))
+            self._count(s, "ok")
             self._persist()
 
     def record_fail(self, model: str, code: int | None) -> None:
@@ -64,6 +89,7 @@ class ModelHealth:
             else:
                 cool = min(COOLDOWN_MAX, COOLDOWN_503_BASE * 2 ** (s["fails"] - 1))
             s.update(until=int(self.clock() + cool), last_err=code, last_fail=int(self.clock()))
+            self._count(s, str(code or "error"))
             self._persist()
 
     def summary(self) -> list[str]:
@@ -76,6 +102,10 @@ class ModelHealth:
             else:
                 ok = s.get("last_ok")
                 out.append(f"{m}: healthy" + (f" (last success {round((now - ok) / 3600, 1)}h ago)" if ok else ""))
+            st = self.stats(m)
+            if total := sum(st.values()):
+                errs = ", ".join(f"{v}× {k}" for k, v in sorted(st.items()) if k != "ok")
+                out[-1] += f" · 7d: {st.get('ok', 0)}/{total} ok" + (f" ({errs})" if errs else "")
         return out or ["no calls recorded yet"]
 
 
