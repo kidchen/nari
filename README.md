@@ -137,7 +137,7 @@ ssh opc@<vm-ip> 'cd ~/nari.prev && docker compose up -d --build'     # roll back
 
 - **Deploys** unpack into a fresh `~/nari` and keep the previous release as `~/nari.prev`. The server's `.env` and all data (in the `nari-data` volume) are kept.
 - **Disk:** container logs are capped (10 MB × 3) and app data is pruned nightly. Each deploy removes old images and trims Docker's build cache to 1.5 GB, which otherwise grows with every deploy, then prints disk usage.
-- **Backups** run weekly into the `nari-backups` volume (newest 8 kept), encrypted, and each deploy copies the newest one to `backups/` on your machine. See [Backups](#backups-encrypted) to restore.
+- **Backups** run weekly into the `nari-backups` volume, encrypted: the newest 8 are kept, plus the newest of each month for 24 months. Each deploy copies the newest one to `backups/` on your machine (same retention). See [Backups](#backups-encrypted) to restore.
 - **Run only one copy of the bot.** Two copies polling the same token make Telegram reject one ("Conflict"). `deploy.sh` warns if a local copy is running.
 
 ---

@@ -10,7 +10,8 @@ Retention (nightly):
   statement PDFs     30 days    — data/statements/inbox (files, not DB rows)
   job_runs           30 days    — the job ledger behind /status and the job alarms
   ticker info cache  30 days    — refetched from Yahoo after expiry
-Backups (weekly): sqlite online-backup into BACKUP_DIR, newest N kept.
+Backups (weekly): sqlite online-backup into BACKUP_DIR, age-encrypted; the newest 8 are kept, plus the
+newest of each month for 24 months (so damage noticed late can still be undone).
 """
 from __future__ import annotations
 
@@ -142,7 +143,21 @@ def _backups(backup_dir: Path) -> list[Path]:
     return sorted(list(backup_dir.glob("nari-*.db")) + list(backup_dir.glob("nari-*.db.age")), key=lambda p: p.name)
 
 
-def backup(db: DB, backup_dir: Path, keep: int = 8, recipient: str | None = None) -> Path:
+def to_keep(names: list[str], keep: int = 8, months: int = 24) -> set[str]:
+    """The newest `keep` backups, plus the newest one of each of the last `months` months
+    (names are nari-YYYYMMDD-HHMMSS.db[.age])."""
+    newest_first = sorted(names, reverse=True)
+    out, per_month = set(newest_first[:keep]), []
+    for n in newest_first:
+        month = n[5:11]                                     # YYYYMM
+        if month not in per_month:
+            per_month.append(month)
+            if len(per_month) <= months:
+                out.add(n)
+    return out
+
+
+def backup(db: DB, backup_dir: Path, keep: int = 8, recipient: str | None = None, months: int = 24) -> Path:
     """Consistent online copy (sqlite backup API), age-encrypted if `recipient` is set; keep the newest `keep`."""
     backup_dir.mkdir(parents=True, exist_ok=True)
     dest = backup_dir / f"nari-{datetime.now():%Y%m%d-%H%M%S}.db"
@@ -153,8 +168,11 @@ def backup(db: DB, backup_dir: Path, keep: int = 8, recipient: str | None = None
         dest = _age_encrypt(dest, recipient)
     else:
         log.warning("Backup written UNENCRYPTED: set maintenance.backup_age_recipient")
-    for old in _backups(backup_dir)[:-keep]:
-        old.unlink()
+    files = _backups(backup_dir)
+    kept = to_keep([f.name for f in files], keep, months)
+    for old in files:
+        if old.name not in kept:
+            old.unlink()
     return dest
 
 

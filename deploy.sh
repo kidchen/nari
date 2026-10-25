@@ -241,7 +241,16 @@ if remote "docker run --rm -v nari-backups:/b --entrypoint sh nari:latest -c 'f=
   else
     mv "$LOCAL_BAK.part" "$LOCAL_BAK"; warn "newest server backup is NOT encrypted (set maintenance.backup_age_recipient): $LOCAL_BAK"
   fi
-  ls -1t backups/nari-*.db backups/nari-*.db.age 2>/dev/null | tail -n +9 | xargs rm -f 2>/dev/null || true
+  # Same retention as the server: newest 8, plus the newest of each of the last 24 months.
+  kept=0; months=""
+  for f in $(ls -1 backups/nari-*.db backups/nari-*.db.age 2>/dev/null | sort -r); do
+    m=$(basename "$f" | cut -c6-11); kept=$((kept + 1))
+    if [ "$kept" -le 8 ]; then months="$months $m"; continue; fi
+    case " $months " in
+      *" $m "*) rm -f "$f" ;;                                          # an older one from a month already kept
+      *) if [ "$(echo $months | tr ' ' '\n' | sort -u | wc -l)" -lt 24 ]; then months="$months $m"; else rm -f "$f"; fi ;;
+    esac
+  done
 else
   rm -f "$LOCAL_BAK.part"; warn "no server backup yet (weekly, Sundays 03:30; or /run backup)"
 fi

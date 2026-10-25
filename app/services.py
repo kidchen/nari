@@ -132,7 +132,8 @@ class Services:
         try:
             mt = self.cfg.settings.get("maintenance", {})
             recipient = mt.get("backup_age_recipient")
-            path = await asyncio.to_thread(maintenance.backup, self.db, BACKUP_DIR, mt.get("backup_keep", 8), recipient)
+            path = await asyncio.to_thread(maintenance.backup, self.db, BACKUP_DIR, mt.get("backup_keep", 8), recipient,
+                                           mt.get("backup_keep_months", 24))
             log.info("Backup written: %s", path)
             monitoring.note(f"{path.name}, {path.stat().st_size / 1e6:.1f} MB" + ("" if recipient else ", UNENCRYPTED"))
             if force:

@@ -226,3 +226,17 @@ def test_model_usage_stats_per_day():
     h.record_ok("m")
     assert list(llm.ModelHealth(db.get_kv, db.set_kv, clock=clock).state["m"]["days"]) == [
         __import__("datetime").date.fromtimestamp(clock.t).isoformat()]          # older days dropped, persisted
+
+
+def test_backup_retention_keeps_recent_weeks_and_one_per_month():
+    from datetime import date, timedelta
+
+    from app import maintenance as mt
+    names = [f"nari-{date(2024, 1, 7) + timedelta(weeks=i):%Y%m%d}-033000.db.age" for i in range(150)]   # ~3 years weekly
+    kept = sorted(mt.to_keep(names, keep=8, months=24))
+    newest = sorted(names)[-8:]
+    assert set(newest) <= set(kept)                                      # the last 8 weeks
+    months = {n[5:11] for n in kept}
+    assert len(months) == 24 and len(kept) == 8 + 24 - len({n[5:11] for n in newest})   # one per month beyond those
+    for m in months:                                                     # the kept one is that month's newest
+        assert max(n for n in names if n[5:11] == m) in kept
