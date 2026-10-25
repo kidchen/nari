@@ -33,7 +33,8 @@ CHASE_FIRST = "chase.com/cardhelp\nNew Balance\nAccount Number: XXXX XXXX XXXX 8
 CHASE = _words([_row(40, "PAYMENTS AND OTHER CREDITS"),
                 _row(40, "12/28 AUTOMATIC PAYMENT - THANK YOU -50.00"),
                 _row(40, "PURCHASE"),
-                _row(40, "12/15 NETFLIX.COM ANYTOWN CA 15.49"),
+                _row(40, "12/15 NETFLIX.COM ANYTOWN CA 14.99"),
+                _row(40, "12/16 PARKING METER .50"),                     # no leading zero, as Chase prints it
                 _row(40, "01/03 TRADER JOE S #123 OGDENVILLE CA 55.51"),
                 _row(40, "FEES CHARGED"),
                 _row(40, "01/09 ANNUAL MEMBERSHIP FEE 9.00"),
@@ -60,8 +61,10 @@ def test_boa_layout_two_dates_refs_and_sections():
 def test_chase_layout_and_year_wrap():
     st = S.parse(CHASE, CHASE_FIRST)
     assert (st.bank, st.last4) == ("chase", "8765") and st.ok
-    assert [t.date for t in st.txns] == [date(2026, 12, 28), date(2026, 12, 15), date(2027, 1, 3), date(2027, 1, 9)]
-    assert [t.kind for t in st.txns] == ["payment", "purchase", "purchase", "fee"]
+    assert [t.date for t in st.txns] == [date(2026, 12, 28), date(2026, 12, 15), date(2026, 12, 16), date(2027, 1, 3),
+                                         date(2027, 1, 9)]
+    assert [t.kind for t in st.txns] == ["payment", "purchase", "purchase", "purchase", "fee"]
+    assert st.txns[2].amount_cents == 50
 
 
 def test_discover_crops_rewards_box_and_keeps_category():
@@ -526,7 +529,9 @@ def test_alert_owner_by_card_then_forwarder(tmp_path, monkeypatch):
     s.cfg.profiles["sci"]["email_from"] = ["sci@example.com"]
     assert F.alert_owner(s, a, "Bank of America <x@bank.example>") is None          # ambiguous: skipped
     assert F.alert_owner(s, a, "Sci <sci@example.com>") == "sci"                   # forwarded by sci
-    s.cfg.cards["disc"]["last4"] = ["4321"]                                        # the card's owner wins
+    s.cfg.cards["disc"]["last4"] = ["4321"]                                        # a Discover card with those digits
+    assert F.alert_owner(s, a, "Sci <sci@example.com>") == "sci"                   # ...isn't this BoA card
+    s.cfg.cards["boa1"] = {"name": "BoA Cash", "owner": "admin", "last4": ["4321"]}  # the BoA card's owner wins
     assert F.alert_owner(s, a, "Sci <sci@example.com>") == "admin"
 
 
@@ -556,3 +561,15 @@ def test_chase_alert_direct_and_forwarded():
     assert A.parse(CHASE_ALERT.replace("Transaction alert", "Payment alert")) is None        # not a charge
     assert A.parse(BOA_ALERT).bank == "boa"                    # BoA's "purchase" text isn't mistaken for Chase
     assert A.imap_criteria(A.SUBJECTS) == ["OR", "SUBJECT", '"transaction exceeds alert limit"', "SUBJECT", '"transaction with"']
+
+
+def test_card_matching_needs_the_same_bank():
+    from app.features.expenses import store
+    cards = {"a": {"name": "Chase Freedom", "owner": "x", "last4": ["1234"]},
+             "b": {"name": "Some Card", "owner": "y", "last4": ["1234"], "bank": "discover"},
+             "c": {"name": "Plain", "owner": "z", "last4": ["5555"]}}
+    assert store.card_bank(cards["a"]) == "chase" and store.card_bank(cards["c"]) is None
+    assert store.find_card(cards, "chase", "1234")["owner"] == "x"
+    assert store.find_card(cards, "discover", "1234")["owner"] == "y"      # same digits, other bank
+    assert store.find_card(cards, "boa", "1234") is None
+    assert store.find_card(cards, "boa", "5555")["owner"] == "z"            # bank unknown in config: digits decide

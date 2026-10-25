@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from app.db import DB
+from app.features.cards.cards import card_bank, find_card  # noqa: F401 — re-exported for expenses code
 from app.features.expenses import categories as C
 from app.features.expenses.statements import Statement
 

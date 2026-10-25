@@ -53,9 +53,8 @@ def save_statement(s, pid: str, name: str, data: bytes, now: datetime | None = N
 
 def card_label(s, pid: str, st: statements.Statement) -> str:
     """The card's name from the cards config if its `last4` matches, else '<Bank> ··1234'."""
-    for c in s.cfg.cards.values():
-        if c.get("owner") == pid and st.last4 in [str(x) for x in (c.get("last4") or [])]:
-            return f"{c['name']} ··{st.last4}"
+    if c := store.find_card(s.cfg.cards, st.bank, st.last4, pid):
+        return f"{c['name']} ··{st.last4}"
     return f"{statements.BANKS[st.bank]['name']} ··{st.last4}"
 
 
@@ -236,9 +235,8 @@ def _sched(key: str, default: dict):
 def alert_owner(s, alert: alerts.Alert, sender: str) -> str | None:
     """The card's owner (cards config `last4`); else whoever forwarded it (profiles.<id>.email_from);
     else the only person with expenses. Ambiguous -> None (skipped, logged)."""
-    for c in s.cfg.cards.values():
-        if alert.last4 in [str(x) for x in (c.get("last4") or [])] and c.get("owner") in s.cfg.profiles:
-            return c["owner"]
+    if (c := store.find_card(s.cfg.cards, alert.bank, alert.last4)) and c.get("owner") in s.cfg.profiles:
+        return c["owner"]
     for pid, p in s.cfg.profiles.items():
         if any(a and a.lower() in sender.lower() for a in (p.get("email_from") or [])):
             return pid

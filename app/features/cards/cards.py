@@ -187,3 +187,26 @@ def best_card(cards: dict[str, Any], profile: str, category: str, today: date, d
             rate, reason = float(c["rotating"]["rate"]), f"{qkey} 5% category"
         ranked.append((rate, c["name"], reason))
     return sorted(ranked, reverse=True)
+
+
+# ---- matching a card by bank + ending (alerts, statements, 5% emails) --------------------------
+
+BANK_WORDS = {"boa": ("bank of america", "boa"), "chase": ("chase",), "discover": ("discover",),
+              "amex": ("amex", "american express")}
+
+
+def card_bank(card: dict) -> str | None:
+    """The card's bank: `bank:` in the cards config, else the rotating issuer, else from its name."""
+    if b := card.get("bank") or (card.get("rotating") or {}).get("issuer"):
+        return str(b).lower()
+    name = str(card.get("name", "")).lower()
+    return next((b for b, words in BANK_WORDS.items() if any(w in name for w in words)), None)
+
+
+def find_card(cards: dict, bank: str, last4: str, owner: str | None = None) -> dict | None:
+    """The configured card with this ending at this bank (a bank-less config entry still matches)."""
+    for c in cards.values():
+        if last4 in [str(x) for x in (c.get("last4") or [])] and card_bank(c) in (bank, None) \
+                and (owner is None or c.get("owner") == owner):
+            return c
+    return None

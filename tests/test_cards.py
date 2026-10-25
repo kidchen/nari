@@ -151,3 +151,18 @@ def test_card_email_owner_attribution():
     cfg.cards["y"] = {"owner": "b", "rotating": {"issuer": "chase"}}
     j2 = Services(cfg, DB(":memory:"), None)
     assert email_owner(j2, "chase@mcmap.chase.com", owners) is None  # two holders: don't guess
+
+
+def test_direct_5pct_email_goes_to_the_card_by_its_ending(tmp_path, monkeypatch):
+    """Two Discover cardholders: a 5% email straight from the bank is attributed by its card ending."""
+    from helpers import DISCOVER_EMAIL, _bot
+
+    from app.features.cards import feature as CF
+    b, _ = _bot(tmp_path, monkeypatch)
+    s = b.services
+    s.cfg.profiles["sci"]["features"] = ["realestate", "biorxiv", "cards"]
+    s.cfg.cards["disc"]["last4"] = ["9999"]
+    s.cfg.cards["sci_disc"] = {"name": "Sci Discover", "owner": "sci", "last4": ["1234"], "rates": {"other": 1},
+                               "rotating": {"issuer": "discover", "rate": 5}}
+    assert CF.ending_owner(s, DISCOVER_EMAIL, "discover") == "sci"                 # "...ending with 1234"
+    assert CF.ending_owner(s, DISCOVER_EMAIL, "chase") is None                     # same digits, other bank

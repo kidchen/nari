@@ -5,6 +5,7 @@ import asyncio
 import html
 import json
 import logging
+import re
 from datetime import date
 
 from telegram.constants import ParseMode
@@ -38,6 +39,14 @@ def email_owner(s, sender: str, owners_by_addr: dict[str, str]) -> str | None:
     return holders[0] if len(holders) == 1 else None
 
 
+def ending_owner(s, html: str, issuer: str) -> str | None:
+    """Whose card is the email about? Banks print the ending ("account number ending with 1234")."""
+    for digits in re.findall(r"ending (?:in|with)\s*(\d{4,5})", rotating.email_text(html), re.I):
+        if c := cards.find_card(s.cfg.cards, issuer, digits):
+            return c.get("owner")
+    return None
+
+
 def collect_card_emails(s, mails) -> list[rotating.QuarterInfo]:
     """Blocking: parse 5%-category emails, merge into the DB. Returns quarters that are new or changed."""
     cfg, em = s.cfg, s.cfg.settings["cards"]["email"]
@@ -50,8 +59,8 @@ def collect_card_emails(s, mails) -> list[rotating.QuarterInfo]:
         if not any(a in sender for a in allowed):
             log.info("Ignoring 5%% email from unlisted sender %r", m.sender)
             continue
-        owner = email_owner(s, sender, owners_by_addr)
         for q in rotating.parse_email(m.sender, m.subject, m.html, llm_fn).quarters:
+            owner = ending_owner(s, m.html, q.issuer) or email_owner(s, sender, owners_by_addr)
             old = cards.load_email_quarter(s.db, q.issuer, q.quarter)
             merged = rotating.merge(old, q)
             cards.save_email_quarter(s.db, merged)                  # shared: public categories

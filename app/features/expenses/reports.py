@@ -189,7 +189,7 @@ def card_check(db: DB, cards_cfg: dict, owner: str, p: Period) -> tuple[list[str
     """(lines, missed cents): estimate, ignoring caps. Needs `last4` on the person's cards in the cards config."""
     from app.features.cards import cards as K
     mine = K.cards_for(cards_cfg, owner)
-    by_last4 = {str(x): c["name"] for c in mine.values() for x in (c.get("last4") or [])}
+    by_last4 = any(c.get("last4") for c in mine.values())
     if len(mine) < 2:
         return [], 0
     if not by_last4:
@@ -197,7 +197,7 @@ def card_check(db: DB, cards_cfg: dict, owner: str, p: Period) -> tuple[list[str
     missed: dict[tuple[str, str], int] = defaultdict(int)
     ranking_cache: dict[tuple[str, date], list] = {}
     for r in store.spending(db, owner, p.start, p.end):
-        used = by_last4.get(r["last4"])
+        used = (store.find_card(mine, r["bank"], r["last4"]) or {}).get("name")
         if r["kind"] != "purchase" or not used:
             continue
         terms = MERCHANT_TERMS.get(r["merchant"], []) + CARD_TERMS.get(r["category"], []) or ["other"]

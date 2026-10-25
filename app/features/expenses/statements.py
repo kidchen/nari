@@ -28,7 +28,7 @@ BANKS: dict[str, dict[str, Any]] = {
     "chase": {"name": "Chase", "marker": r"chase\.com|\bchase\b"},       # \b: not "purchase"
 }
 DATE_RE = re.compile(r"^\d{2}/\d{2}(/\d{2})?\*?$")         # Amex adds the year; '*' = posted later
-AMOUNT_RE = re.compile(r"^[-+]?\$?[\d,]+\.\d{2}$")
+AMOUNT_RE = re.compile(r"^[-+]?\$?(\d[\d,]*)?\.\d{2}$")           # Chase prints 50 cents as ".50"
 # Bill payments (not refunds) in the payments/credits section. BoA's online payment says just "ONLINE/MOBILE …".
 PAYMENT_RE = re.compile(r"PAYMENT|DIRECTPAY|AUTOPAY|AUTOMATIC PAY|THANK YOU|ONLINE/MOBILE|ELECTRONIC", re.I)
 MONTHS = {m: i for i, m in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
