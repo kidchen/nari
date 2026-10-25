@@ -17,7 +17,7 @@ from datetime import date
 
 log = logging.getLogger(__name__)
 
-ISSUER_DOMAINS = {"discover": ("discover.com",), "chase": ("chase.com",)}
+ISSUER_DOMAINS = {"discover": ("discover.com", "capitalone.com"), "chase": ("chase.com",)}   # "Discover by Capital One"
 ORIG_FROM_RE = re.compile(r"From:\s*[^<\n]{0,60}<[^@>\s]+@([\w.-]+)>", re.I)
 DATE = r"(\d{1,2}/\d{1,2}/\d{2,4})"
 

@@ -123,7 +123,7 @@ cards:
     subject: "5%"                 # IMAP subject search
     mailboxes: [INBOX, "[Gmail]/Spam"]   # forwarded bank mail often lands in Spam
     lookback_days: 120            # announcements arrive ~a month before the quarter
-    senders: [discover.com, chase.com]   # direct senders; forwarding addresses go in profiles.<id>.email_from
+    senders: [discover.com, capitalone.com, chase.com]   # direct senders (Discover is now "Discover by Capital One")
   quarterly_schedule: {month: "1,4,7,10", day: 1, hour: 9, minute: 0}    # this quarter's plan
   activation_reminder_schedule: {month: "1,4,7,10", day: 15, hour: 9, minute: 0}  # only if not activated
 

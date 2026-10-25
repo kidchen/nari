@@ -320,14 +320,18 @@ async def cmd_spend(bot, update, ctx) -> None:
     if args[:1] == ["report"]:
         await _report_cmd(bot, update, pid, args[1:])
         return
-    if args[:1] == ["subs"]:
-        subs = reports.subscriptions(s.db, pid, s.today())
-        text = "\n".join(reports._sub_lines(s.db, pid, subs, reports.period("month", s.today(), True))) or \
-            "No subscriptions detected yet (needs 3 monthly or 2 yearly charges from the same merchant)."
-        await bot._reply(update, text)
+    if (who := await _whose(bot, update, pid, args)) is None:
         return
-    if s.db.rows("SELECT 1 FROM expense_txns WHERE owner=? AND category='' AND kind!='payment' LIMIT 1", (pid,)):
-        await asyncio.to_thread(store.categorize, s.db, _llm(s), pid)
+    args = [a for a in args if a not in s.cfg.profiles]
+    header = f"<b>{_esc(s.cfg.profiles[who]['name'])}</b> · " if who != pid else ""
+    if s.db.rows("SELECT 1 FROM expense_txns WHERE owner=? AND category='' AND kind!='payment' LIMIT 1", (who,)):
+        await asyncio.to_thread(store.categorize, s.db, _llm(s), who)
+    if args[:1] == ["subs"]:
+        subs = reports.subscriptions(s.db, who, s.today())
+        text = "\n".join(reports._sub_lines(s.db, who, subs, reports.period("month", s.today(), True))) or \
+            "No subscriptions detected yet (needs 3 monthly or 2 yearly charges from the same merchant)."
+        await bot._reply(update, header + text)
+        return
     if args[:1] == ["inbox"]:
         files = sorted(inbox(bot.services, pid).glob("*.pdf")) if inbox(bot.services, pid).exists() else []
         if not files:
@@ -336,7 +340,23 @@ async def cmd_spend(bot, update, ctx) -> None:
             await offer_import(bot, update, pid, f, f.name.split("-", 2)[-1])
         return
     days = int(args[0]) if args and args[0].isdigit() and 0 < int(args[0]) <= 400 else 30
-    await bot._reply(update, summary(bot.services, pid, days))
+    await bot._reply(update, header + summary(bot.services, who, days))
+
+
+async def _whose(bot, update, pid: str, args: list[str]) -> str | None:
+    """A person's name in the arguments means their data: admin only, and they must have expenses.
+    None = refused (a reply was sent)."""
+    s = bot.services
+    who = next((a for a in args if a in s.cfg.profiles), pid)
+    if who == pid:
+        return pid
+    if pid != s.cfg.primary_profile:
+        await bot._reply(update, "You can only see your own spending.")
+        return None
+    if "expenses" not in s.access.allowed(who):
+        await bot._reply(update, f"{_esc(who)} doesn't have expenses enabled.")
+        return None
+    return who
 
 
 async def _report_cmd(bot, update, pid: str, args: list[str]) -> None:
@@ -344,12 +364,7 @@ async def _report_cmd(bot, update, pid: str, args: list[str]) -> None:
     a person's name is admin-only."""
     s = bot.services
     kind = next((a for a in args if a in reports.KINDS), "month")
-    who = next((a for a in args if a in s.cfg.profiles), pid)
-    if who != pid and pid != s.cfg.primary_profile:
-        await bot._reply(update, "You can only see your own reports.")
-        return
-    if who != pid and "expenses" not in s.access.allowed(who):
-        await bot._reply(update, f"{_esc(who)} doesn't have expenses enabled.")
+    if (who := await _whose(bot, update, pid, args)) is None:
         return
     chat_pid = s.db.profile_for(update.effective_chat.id)
     await send_report(s, who, kind, current="now" in args, to=chat_pid)
@@ -440,6 +455,7 @@ FEATURE = Feature(
                        "/spend fix costco — correct a category",
                        "/spend name costco = Costco — rename a merchant",
                        "/spend inbox — import statements saved earlier",
+                       "/spend <name> — someone else's spending (admin only; also /spend subs <name>)",
                        "Send a statement PDF — import it")),),
     callbacks=((r"^exp:(imp|no):", on_button), (r"^exp:(fm|fc):", on_fix_button), (r"^exp:skip:", on_skip_button)),
     mail=MailQuery(criteria=lambda st: alerts.imap_criteria(alerts.SUBJECTS),

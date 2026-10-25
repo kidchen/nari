@@ -9,6 +9,9 @@ BoA ("Credit card transaction exceeds alert limit you set", 2026):
     <card name> ending in 1234 / Amount: $10.89 / Date: October 19, 2026 / Where: <merchant>
 Chase ("You made a $28.37 transaction with <merchant>", 2026): labels on their own line, no colon:
     Account / Chase Freedom Visa (...1234) / Date / Oct 24, 2026 at 2:54 PM ET / Merchant / <name> / Amount / $28.37
+Discover by Capital One ("A new transaction was charged to your account", 2026): one sentence:
+    About your Discover it Card ending in 1234 / ... on Oct. 25, 2026, at <merchant>, a pending authorization or
+    purchase in the amount of $66.23 was placed or charged ...   (holds like gas or hotels can show a placeholder)
 """
 from __future__ import annotations
 
@@ -60,6 +63,7 @@ def _cents(s: str) -> int | None:
 
 def _date(s: str) -> date | None:
     s = re.sub(r"\s+at\s+.*$", "", (s or "").strip())          # "Oct 24, 2026 at 2:54 PM ET"
+    s = re.sub(r"^(Sept|[A-Z][a-z]{2})\.", lambda m: m.group(1)[:3], s)   # "Oct. 25, 2026", "Sept. 3, 2026"
     for fmt in ("%B %d, %Y", "%b %d, %Y", "%m/%d/%Y", "%m/%d/%y"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -91,14 +95,32 @@ def parse_chase(lines: list[str]) -> Alert | None:
     return Alert("chase", card.group(2), card.group(1).strip(), when, amount, where)
 
 
+DISCOVER_SENTENCE = re.compile(r"on (?P<date>[A-Z][a-z]{2,8}\.? \d{1,2}, \d{4}), at (?P<merchant>.+?), a pending "
+                               r"authorization or purchase in the amount of (?P<amount>\$[\d,]*\.\d{2})", re.S)
+
+
+def parse_discover(lines: list[str]) -> Alert | None:
+    text = " ".join(lines)
+    card = re.search(r"About your (Discover[\w ]*?Card) ending in (\d{4})", text)
+    m = DISCOVER_SENTENCE.search(text)
+    if not (card and m):
+        return None                                      # other Discover/Capital One mail: not a charge
+    when, amount = _date(m.group("date")), _cents(m.group("amount"))
+    if not (when and amount):
+        return None
+    return Alert("discover", card.group(2), card.group(1).strip(), when, amount, m.group("merchant").strip())
+
+
 PARSERS: dict[str, tuple[str, Callable[[list[str]], Alert | None]]] = {
     # bank: (marker in the body text, parser)
     "boa": (r"bank of america", parse_boa),
     "chase": (r"\bchase\b|jpmorgan", parse_chase),       # \b: not the "chase" in "purchase"
+    "discover": (r"discover", parse_discover),           # "Discover by Capital One" since 2026
 }
 # IMAP subject searches (forwards keep the subject after "Fw:"), one per supported alert type.
 SUBJECTS = ["transaction exceeds alert limit",           # BoA
-            "transaction with"]                          # Chase: "You made a $28.37 transaction with …"
+            "transaction with",                          # Chase: "You made a $28.37 transaction with …"
+            "transaction was charged"]                   # Discover by Capital One
 
 
 def parse(html_or_text: str) -> Alert | None:

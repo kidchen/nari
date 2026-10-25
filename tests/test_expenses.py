@@ -560,7 +560,8 @@ def test_chase_alert_direct_and_forwarded():
     assert A.parse(fwd) == a
     assert A.parse(CHASE_ALERT.replace("Transaction alert", "Payment alert")) is None        # not a charge
     assert A.parse(BOA_ALERT).bank == "boa"                    # BoA's "purchase" text isn't mistaken for Chase
-    assert A.imap_criteria(A.SUBJECTS) == ["OR", "SUBJECT", '"transaction exceeds alert limit"', "SUBJECT", '"transaction with"']
+    assert A.imap_criteria(A.SUBJECTS) == ["OR", "SUBJECT", '"transaction exceeds alert limit"', "OR", "SUBJECT",
+                                           '"transaction with"', "SUBJECT", '"transaction was charged"']
 
 
 def test_card_matching_needs_the_same_bank():
@@ -573,3 +574,37 @@ def test_card_matching_needs_the_same_bank():
     assert store.find_card(cards, "discover", "1234")["owner"] == "y"      # same digits, other bank
     assert store.find_card(cards, "boa", "1234") is None
     assert store.find_card(cards, "boa", "5555")["owner"] == "z"            # bank unknown in config: digits decide
+
+
+DISCOVER_ALERT = """<html><body><p>A new transaction was charged to your account</p><p>Discover by Capital One</p>
+<p>A purchase was charged to your account.</p><p>About your Discover it Card ending in 5555</p>
+<p>As requested, we&#8217;re notifying you that on Oct. 25, 2026, at SQ *BLUE DOOR CAFE, a pending authorization or
+purchase in the amount of $66.23 was placed or charged on your Discover it Card.</p>
+<p>Note: You&#8217;ll receive this notification for both purchases and pending authorizations.</p>
+<p>&copy; 2026 Capital One.</p></body></html>"""
+
+
+def test_discover_by_capital_one_alert():
+    from app.features.expenses import alerts as A
+    a = A.parse(DISCOVER_ALERT)
+    assert a == A.Alert("discover", "5555", "Discover it Card", date(2026, 10, 25), 6623, "SQ *BLUE DOOR CAFE")
+    assert A.parse(DISCOVER_ALERT.replace("Oct.", "Sept.").replace("25,", "3,")).date == date(2026, 9, 3)
+    assert A.parse(DISCOVER_ALERT.replace("a pending authorization or\npurchase", "a payment")) is None
+    assert '"transaction was charged"' in A.imap_criteria(A.SUBJECTS)
+    from app.features.cards import rotating
+    assert rotating.identify_issuer("Discover by Capital One <x@notification.capitalone.com>", "") == "discover"
+
+
+def test_admin_sees_someone_elses_spending(tmp_path, monkeypatch):
+    b, _ = _bot(tmp_path, monkeypatch)
+    b.cfg.profiles["sci"]["features"] = ["realestate", "biorxiv", "expenses"]
+    _seed_txns(b.db, [(str(date.today()), 4200, "SAFEWAY #1", "purchase", "Groceries", "SAFEWAY")], owner="sci")
+    out = []
+    _call(b, asyncio, _cmd(b, "spend"), 1, "/spend sci", out)                     # admin -> sci's data
+    assert out[-1][0].startswith("<b>Sci</b> · 💳 <b>Spending</b>") and "Safeway: $42.00" in out[-1][0]
+    _call(b, asyncio, _cmd(b, "spend"), 1, "/spend subs sci", out)
+    assert out[-1][0].startswith("<b>Sci</b> · No subscriptions detected yet")
+    _call(b, asyncio, _cmd(b, "spend"), 2, "/spend admin", out)                   # not the admin: refused
+    assert out[-1][0] == "You can only see your own spending."
+    _call(b, asyncio, _cmd(b, "spend"), 1, "/spend", out)                         # own data unchanged
+    assert "Sci" not in out[-1][0] and "Safeway" not in out[-1][0]
